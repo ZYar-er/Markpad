@@ -104,6 +104,7 @@ import {
 	const appWindow = getCurrentWindow();
 
 	import HomePage from './components/HomePage.svelte';
+	import { pinnedTagFromWindowLabel, pinnedTagHolder } from './utils/pinnedTagWindow.js';
 import { tabManager, type Tab } from './stores/tabs.svelte.js';
 import { snapshotTab } from './utils/tabTransfer.js';
 import { outgoingTabAnchorLine } from './utils/editorPosition.js';
@@ -876,6 +877,12 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	}
 
 	async function openPinnedTag(tag: { name: string; color: string; files: string[] }) {
+		// Two windows sharing a tag share one pin entry, and the last to save wins.
+		const holder = await pinnedTagHolder(tag.name, appWindow.label);
+		if (holder) {
+			await invoke('focus_window', { label: holder });
+			return;
+		}
 		tabManager.setWindowTag({ ...tag, pinned: true });
 		for (const file of tag.files) await loadMarkdown(file);
 		showHome = false;
@@ -887,8 +894,10 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		await refreshPinnedTags();
 	}
 
+	// Same condition as the template's HomePage gate: an empty window or the
+	// home tab shows Home without `showHome`, which is the cold-start case.
 	$effect(() => {
-		if (showHome) refreshPinnedTags().catch(console.error);
+		if (showHome || !tabManager.activeTab || isHomePath(tabManager.activeTab.path)) refreshPinnedTags().catch(console.error);
 	});
 
 	const documentSession = createDocumentSession({
@@ -2726,6 +2735,17 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		}
 	}
 
+	/**
+	 * Close the tag's files and leave an empty window on Home. The pin is saved
+	 * first, so a pinned tag keeps its files and can be reopened from Home or
+	 * the app menu. A dirty tab the user keeps open keeps the tag too.
+	 */
+	async function closeWindowTag() {
+		await savePinnedTagIfNeeded();
+		await closeTabsWithConfirmation(tabManager.tabs.map((tab) => tab.id));
+		if (tabManager.tabs.length === 0) tabManager.setWindowTag(null);
+	}
+
 	async function destroyWindowAfterTabsClosed() {
 		await savePinnedTagIfNeeded();
 		if (settings.restoreStateOnReopen) {
@@ -3569,7 +3589,13 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 
 			await windowSession.restore();
 			if (isDisposed) return;
-			await windowSession.claimTransferredTab();
+			const pinnedName = pinnedTagFromWindowLabel(appWindow.label);
+			if (pinnedName === null) await windowSession.claimTransferredTab();
+			else {
+				const tags = (await invoke('list_pinned_tags')) as typeof pinnedTags;
+				const tag = tags.find((pinned) => pinned.name === pinnedName);
+				if (tag) await openPinnedTag(tag);
+			}
 			if (isDisposed) return;
 
 			const urlParams = new URLSearchParams(window.location.search);
@@ -3861,6 +3887,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		onnewFile={handleNewFile}
 		onopenFile={selectFile}
 		onmergeAllWindows={mergeAllWindowsHere}
+		onclosetag={closeWindowTag}
 		onsaveFile={saveContent}
 		onsaveFileAs={saveContentAs}
 		onreloadFromDisk={reloadFromDisk}
@@ -3901,6 +3928,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		onnewFile={handleNewFile}
 		onopenFile={selectFile}
 		onmergeAllWindows={mergeAllWindowsHere}
+		onclosetag={closeWindowTag}
 		onsaveFile={saveContent}
 		onsaveFileAs={saveContentAs}
 		onreloadFromDisk={reloadFromDisk}
