@@ -177,6 +177,7 @@ pub async fn render_markdown(content: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn read_file_content_checked(path: String) -> Result<(String, bool, String), String> {
     tauri::async_runtime::spawn_blocking(move || {
+        crate::asset_protocol::trust_document_host(&path);
         read_to_string_lossy(&path)
             .map(|decoded| (decoded.content, decoded.lossy, decoded.encoding))
             .map_err(|e| e.to_string())
@@ -413,6 +414,10 @@ const LAUNCHABLE_EXTENSIONS: &[&str] = &[
     "application",
     "appref-ms",
     "msc",
+    // hh.exe renders a compiled help file's HTML with script enabled.
+    "chm",
+    // msdt.exe runs the troubleshooter's embedded PowerShell.
+    "diagcab",
     "jar",
 ];
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -1305,6 +1310,12 @@ pub(crate) mod tests {
         for name in [
             "x.exe", "x.bat", "x.cmd", "x.ps1", "x.vbs", "x.lnk", "x.msi", "x.scr", "x.hta",
         ] {
+            assert!(launchable(name), "{name}");
+        }
+
+        // Not programs, but their handlers run script the file carries.
+        #[cfg(target_os = "windows")]
+        for name in ["x.chm", "x.diagcab"] {
             assert!(launchable(name), "{name}");
         }
 

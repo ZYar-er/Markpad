@@ -39,6 +39,27 @@ function isAbsoluteMarkdownPath(path: string): boolean {
 	return path.startsWith('/') || path.startsWith('\\') || /^[a-z]:/i.test(path);
 }
 
+/**
+ * Whether `path` is a UNC path (`\\host\share\x`, `//host/share/x`, or any
+ * mix of the two separators) on a host other than the one `currentFile` lives
+ * on.
+ *
+ * Touching a UNC path makes Windows connect to its host over SMB and offer the
+ * user's NTLM credentials, so a document that can make the app touch one leaks
+ * a password hash to whoever wrote it. A document that itself lives on a share
+ * may still reach that host: its own images and neighbours live there. Every
+ * place a document's text becomes a path the app opens or loads asks this.
+ */
+export function isOffHostUncPath(path: string, currentFile: string): boolean {
+	const host = uncHost(path);
+	return host !== null && host !== uncHost(currentFile);
+}
+
+function uncHost(path: string): string | null {
+	const match = /^[\\/]{2}([^\\/]+)/.exec(path);
+	return match ? match[1].toLowerCase() : null;
+}
+
 export function getMarkdownLinkTarget(href: string): MarkdownLinkTarget | null {
 	const pathWithoutHash = href.split('#')[0].split('?')[0];
 	const isMarkdownTarget = hasMarkdownLinkExtension(pathWithoutHash);
@@ -86,9 +107,13 @@ function resolveHrefRelativePath(base: string, relative: string): string {
 }
 
 export function resolveMarkdownTargetPath(currentFile: string, target: MarkdownLinkTarget): string | null {
-	if (isAbsoluteMarkdownPath(target.path)) return target.path;
-	if (!currentFile) return null;
-	return resolveHrefRelativePath(currentFile, target.path);
+	let resolved: string;
+	if (isAbsoluteMarkdownPath(target.path)) resolved = target.path;
+	else if (!currentFile) return null;
+	else resolved = resolveHrefRelativePath(currentFile, target.path);
+	// `getMarkdownLinkTarget` refuses a literal `//`, but comrak writes `\` as
+	// `%5C` and the decoded `\\host\…` reached `canonicalize_path` intact.
+	return isOffHostUncPath(resolved, currentFile) ? null : resolved;
 }
 
 export function isOpenInNewTabMarkdownTarget(href: string, currentFile: string): boolean {
