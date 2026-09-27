@@ -66,6 +66,29 @@ test('web addresses are left to the browser', () => {
 	}
 });
 
+test('a UNC path is not opened from a link', () => {
+	// Opening `\\host\share\x` makes Windows connect to `host` over SMB and
+	// offer the user's NTLM credentials, so one click on a link in a document
+	// leaks a password hash to whoever wrote it. `//host` was already refused
+	// as a web address; the backslash and encoded spellings reached the same
+	// UNC path through the image resolver.
+	for (const href of [
+		'\\\\evil.example\\share\\x.exe',
+		'\\\\evil.example/share/x.exe',
+		'%5C%5Cevil.example%5Cshare%5Cx.exe',
+		'/\\evil.example\\share\\x.exe',
+	]) {
+		assert.equal(resolveLocalFileLinkPath(href, CURRENT), null, href);
+	}
+	// A document that itself lives on a share keeps its relative links, as
+	// long as they stay on that host.
+	assert.equal(
+		resolveLocalFileLinkPath('./data.csv', '//server/share/doc.md'),
+		'//server/share/data.csv',
+	);
+	assert.equal(resolveLocalFileLinkPath('../../evil/x.exe', '//server/share/doc.md'), null);
+});
+
 test('an in-page anchor is not a file', () => {
 	assert.equal(resolveLocalFileLinkPath('#section', CURRENT), null);
 	assert.equal(resolveLocalFileLinkPath('', CURRENT), null);
@@ -113,6 +136,18 @@ test('a local file is handed to the OS as a path, not as a URL', () => {
 	const local = offsetOf(handler, 'resolveLocalFileLinkPath');
 	const url = offsetOf(handler, 'await openUrl(anchor.href)');
 	assert.ok(local < url, 'a local file must be caught before the URL fallback');
+});
+
+test('a launchable target is revealed, not opened', () => {
+	// `openPath` hands the file to the OS default handler, and for
+	// `./setup.command`, `Calculator.app` or `x.exe` that handler runs it. The
+	// capability scope stays `**` because a link may point anywhere; this
+	// check, answered in Rust where the file's metadata is, is the guard.
+	const check = offsetOf(handler, "invoke<boolean>('is_launchable_path', { path: localFilePath })");
+	const reveal = offsetOf(handler, "invoke('open_file_folder', { path: localFilePath })");
+	const open = offsetOf(handler, 'await openPath(localFilePath)');
+	assert.ok(check < reveal && reveal < open, 'the check must decide between reveal and open');
+	assert.match(handler, /t\('toast\.launchableLinkRevealed'/);
 });
 
 test('the capability still grants the command this depends on', () => {
