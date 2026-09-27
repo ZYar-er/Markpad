@@ -88,6 +88,24 @@ fn escape_html_attribute(value: &str) -> String {
     escaped
 }
 
+/// `path` percent-encoded so that it names the same file after the frontend's
+/// `decodeURIComponent` (the preview's image pass and the export resolver both
+/// run one). Mirrors `NEEDS_PERCENT_ENCODING` in src/lib/utils/imageEmbed.ts,
+/// the rule for the links Markpad writes itself: `%` above all, since a raw
+/// one either makes the decode throw or decodes to a different name, plus
+/// controls, space, `()<>?#\`. Everything else, non-ASCII included, is kept.
+fn encode_embed_destination(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for character in path.chars() {
+        if character <= ' ' || "\x7f%()<>?#\\".contains(character) {
+            encoded.push_str(&format!("%{:02X}", character as u32));
+        } else {
+            encoded.push(character);
+        }
+    }
+    encoded
+}
+
 /// The comrak configuration the preview is rendered with.
 ///
 /// Extracted because a second reader of the document — `heading_anchors`, for
@@ -519,10 +537,18 @@ fn process_internal_embeds(content: &str) -> Cow<'_, str> {
         // Every interpolated value is HTML-escaped: the target comes straight
         // from the document, so a quote in it would otherwise close the
         // attribute and let the rest be read as markup.
-        let src = escape_html_attribute(&path.replace(" ", "%20"));
+        let src = escape_html_attribute(&encode_embed_destination(path));
         let alt = escape_html_attribute(path);
 
-        if let Some(size_str) = size {
+        // Wrapped in a `<span>` because a bare `<img …/>` alone on a line is a
+        // complete open tag with nothing after it, which CommonMark reads as
+        // the start of an HTML block (type 7). That block runs to the next
+        // blank line and passes every line in it through as raw text, so the
+        // prose, emphasis and task checkboxes under an embed went unrendered.
+        // A line opening with `<span><img` is not that shape, and `span` is
+        // not a block tag, so the embed stays inline in a paragraph exactly
+        // like `![](a.png)` does.
+        let img = if let Some(size_str) = size {
             if size_str.contains('x') {
                 let mut dims = size_str.split('x');
                 let width = escape_html_attribute(dims.next().unwrap_or(""));
@@ -541,7 +567,8 @@ fn process_internal_embeds(content: &str) -> Cow<'_, str> {
             }
         } else {
             format!("<img src=\"{}\" alt=\"{}\" />", src, alt)
-        }
+        };
+        format!("<span>{img}</span>")
     })
 }
 
@@ -2467,6 +2494,43 @@ pub(crate) mod tests {
         let out = process_internal_embeds("![[my photo.png]]\n");
         assert!(out.contains("src=\"my%20photo.png\""), "got: {out}");
         assert!(out.contains("alt=\"my photo.png\""), "got: {out}");
+    }
+
+    #[test]
+    fn embed_src_survives_the_frontends_decode() {
+        // The preview and the export both `decodeURIComponent` the src, so it
+        // must be percent-encoded with the rule `encodeImageDestination` in
+        // src/lib/utils/imageEmbed.ts uses: a raw `%` either throws there
+        // (`50%%20off`) or decodes to a different file (`50%20off` -> `50 off`).
+        for (embed, src) in [
+            ("![[50% off.png]]", "50%25%20off.png"),
+            ("![[50%20off.png]]", "50%2520off.png"),
+            ("![[img/a#1 (b).png]]", "img/a%231%20%28b%29.png"),
+            ("![[图片/截图.png]]", "图片/截图.png"),
+        ] {
+            let out = process_internal_embeds(embed);
+            assert!(out.contains(&format!("src=\"{src}\"")), "{embed}: {out}");
+        }
+    }
+
+    #[test]
+    fn an_embed_alone_on_a_line_does_not_swallow_the_lines_below() {
+        // A bare `<img …/>` alone on a line starts an HTML block (CommonMark
+        // type 7), which runs to the next blank line and passes everything in
+        // it through unparsed: no emphasis, no checkbox, no sourcepos.
+        for embed in [
+            "![[a.png]]",
+            "![[a.png|300]]",
+            "![[a.png|300x200]]",
+            "- ![[a.png]]",
+        ] {
+            let html = convert_markdown(&format!("{embed}\nSome **bold** text\n- [ ] task\n"));
+            assert!(html.contains(">bold</strong>"), "{embed}: {html}");
+            assert!(html.contains("data-task-checkbox"), "{embed}: {html}");
+            assert!(html.contains("<img src=\"a.png\""), "{embed}: {html}");
+        }
+        let sized = convert_markdown("![[a.png|300x200]]\nnext\n");
+        assert!(sized.contains("width=\"300\" height=\"200\""), "{sized}");
     }
 
     #[test]
