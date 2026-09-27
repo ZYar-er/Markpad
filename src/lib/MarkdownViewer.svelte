@@ -104,7 +104,7 @@ import {
 	const appWindow = getCurrentWindow();
 
 	import HomePage from './components/HomePage.svelte';
-	import { pinnedTagFromWindowLabel, pinnedTagHolder } from './utils/pinnedTagWindow.js';
+	import { pinnedTagFromWindowLabel, pinnedTagHolder, pinnedWindowToken } from './utils/pinnedTagWindow.js';
 import { tabManager, type Tab } from './stores/tabs.svelte.js';
 import { snapshotTab } from './utils/tabTransfer.js';
 import { outgoingTabAnchorLine } from './utils/editorPosition.js';
@@ -869,10 +869,23 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		pinnedTags = (await invoke('list_pinned_tags')) as typeof pinnedTags;
 	}
 
+	// The files the close review started from. It can close tabs, and the
+	// close it re-triggers settles again, so both saves use this list.
+	let pinFilesAtClose: string[] | null = null;
+
+	function openFilePaths() {
+		return tabManager.tabs.filter((tab) => hasRealFilePath(tab.path)).map((tab) => tab.path);
+	}
+
+	/**
+	 * Every path that ends a window saves the pin before it closes tabs. An
+	 * empty window says nothing about the group, so it never overwrites it.
+	 */
 	async function savePinnedTagIfNeeded() {
 		const tag = tabManager.windowTag;
 		if (!tag?.pinned) return;
-		const files = tabManager.tabs.filter((tab) => hasRealFilePath(tab.path)).map((tab) => tab.path);
+		const files = pinFilesAtClose ?? openFilePaths();
+		if (files.length === 0) return;
 		await invoke('save_pinned_tag', { name: tag.name, color: tag.color, files });
 	}
 
@@ -881,6 +894,12 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		const holder = await pinnedTagHolder(tag.name, appWindow.label);
 		if (holder) {
 			await invoke('focus_window', { label: holder });
+			return;
+		}
+		// Tabs already here belong to this window's own group. The pinned one
+		// opens in a window of its own, which adopts it from its label.
+		if (tabManager.tabs.some((tab) => !isHomePath(tab.path))) {
+			await invoke('create_transfer_window', { token: pinnedWindowToken(tag.name, Date.now()) });
 			return;
 		}
 		tabManager.setWindowTag({ ...tag, pinned: true });
@@ -986,6 +1005,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		const dirtyTabs = tabManager.tabs.filter((t) => t.isDirty);
 		if (dirtyTabs.length > 0) {
 			isCloseWalkActive = true;
+			pinFilesAtClose ??= openFilePaths();
 			// The walk's dialogs are in-app modals inside THIS window: with
 			// multiple windows, another window may be covering it and the review
 			// would be invisible. Bring the reviewing window to the front first.
@@ -1026,7 +1046,10 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 					shouldCloseAfterResolving: (tab) =>
 						!settings.restoreStateOnReopen || tab.path === '',
 				});
-				if (!resolved) return false;
+				if (!resolved) {
+					pinFilesAtClose = null;
+					return false;
+				}
 			} finally {
 				isCloseWalkActive = false;
 			}
@@ -1036,6 +1059,8 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		// the caller holds the exit until the Rust write returns, so the process
 		// cannot exit under the snapshot.
 		await savePinnedTagIfNeeded();
+		// The re-triggered close finds nothing to review and uses the list last.
+		if (dirtyTabs.length === 0) pinFilesAtClose = null;
 		if (settings.restoreStateOnReopen) {
 			await persistWindowState();
 		}
@@ -2723,6 +2748,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	async function closeTabAndWindowIfLast(tabId: string) {
 		if (!(await canCloseTab(tabId))) return;
 
+		if (tabManager.tabs.length === 1) await savePinnedTagIfNeeded();
 		tabManager.closeTab(tabId);
 		if (tabManager.tabs.length > 0) return;
 
@@ -2750,7 +2776,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	}
 
 	async function destroyWindowAfterTabsClosed() {
-		await savePinnedTagIfNeeded();
 		if (settings.restoreStateOnReopen) {
 			await persistWindowState();
 		}
@@ -3495,6 +3520,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 
 	async function mergeSelfInto(targetLabel: string) {
 		if (isCloseWalkActive) return;
+		await savePinnedTagIfNeeded();
 		for (const tab of [...tabManager.tabs]) {
 			if (isHomePath(tab.path)) {
 				tabManager.closeTab(tab.id);
