@@ -123,6 +123,23 @@ test('lines that are not list items are left to the ordinary Enter', () => {
 	}
 });
 
+test('a thematic break written with spaces keeps the plain Enter', () => {
+	// CommonMark: when a line can be a thematic break or a list item, the break
+	// wins. `- - -` matched the list pattern and Enter wrote a `- ` under it.
+	for (const line of ['- - -', '* * *', '-  -  -', '* * * *', '> - - -', '  - - -']) {
+		assert.equal(parseListItem(line), null, JSON.stringify(line));
+	}
+	assert.equal(enterAtEnd('- - -'), null);
+	assert.equal(enterAtEnd('* * *'), null);
+	// Inside a quote the break is still not an item, and the quote continues.
+	assert.deepEqual(enterAtEnd('> - - -'), { kind: 'continue', text: '> ' });
+	// Two dashes are not a break: `- -` is an item, and so is an item whose text
+	// is a break in another character.
+	assert.deepEqual(enterAtEnd('- -'), { kind: 'continue', text: '- ' });
+	assert.deepEqual(enterAtEnd('- * * *'), { kind: 'continue', text: '- ' });
+	assert.deepEqual(enterAtEnd('- - - text'), { kind: 'continue', text: '- ' });
+});
+
 // -------------------------------------------------------- block quotes (#700)
 
 test('a quoted line continues the quote', () => {
@@ -316,6 +333,16 @@ test('the renumbering stops where the list does', () => {
 		caretLine: 2,
 		caretColumn: 4,
 	});
+});
+
+test('the renumbering stops at a change of delimiter or bullet', () => {
+	// CommonMark starts a new list when the delimiter changes, so `1) x` is the
+	// first item of its own list and is not counted as the next item of `1.`.
+	assert.deepEqual(shift(['1. a', '2. b', '1) x', '2) y'], 2), ['   1. b']);
+	assert.deepEqual(shift(['1. a', '   1) x', '   2) y', '2. b'], 2, true), ['1) x']);
+	// A bullet between two ordered items ends the first list the same way. A
+	// bullet has no number, so this one held already and is kept held.
+	assert.deepEqual(shift(['1. a', '2. b', '* x', '1. c'], 2), ['   1. b']);
 });
 
 test('the caret keeps its place in the text it was in', () => {

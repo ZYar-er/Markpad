@@ -286,6 +286,15 @@ test('quote nests around an already quoted line instead of replacing it', () => 
 	assert.deepEqual(toggleLineMarker('fmt-quote', ['> alpha', '> beta']), ['alpha', 'beta']);
 });
 
+test('quote comes off a quote whose markers have no space after them', () => {
+	// A paragraph break inside a quote is a bare `>`, and `>text` is a quote too.
+	// Reading only `> ` as the marker judged both "not quoted" and nested them.
+	assert.deepEqual(toggleLineMarker('fmt-quote', ['> a', '>', '> b']), ['a', '', 'b']);
+	assert.deepEqual(toggleLineMarker('fmt-quote', ['>a', '>b']), ['a', 'b']);
+	// One space is the marker's; the rest belongs to the quoted text.
+	assert.deepEqual(toggleLineMarker('fmt-quote', ['>     code']), ['    code']);
+});
+
 test('a bracketed link at the head of a list item is not read as a task box', () => {
 	assert.deepEqual(toggleLineMarker('fmt-numbered-list', ['- [label](url)']), ['1. [label](url)']);
 });
@@ -448,6 +457,18 @@ test('reaching outside the selection never breaks a neighbouring pair', () => {
 	// Selecting the markers still works, and still gives the same answer as
 	// selecting only the word — the two paths must not disagree.
 	assert.equal(clickWith('fmt-strikethrough', '~~word~~', '~~word~~'), 'word');
+});
+
+test('bold and italic come apart inside bold italic', () => {
+	// `***` is bold's pair and italic's side by side, so each button finds its
+	// own half in the run and takes only that, instead of wrapping another pair.
+	assert.equal(clickWith('fmt-bold', 'a ***b*** c', 'b'), 'a *b* c');
+	assert.equal(clickWith('fmt-italic', 'a ***b*** c', 'b'), 'a **b** c');
+	assert.equal(clickWith('fmt-bold', '___b___', 'b'), '_b_');
+	assert.equal(clickWith('fmt-italic', '___b___', 'b'), '__b__');
+	// Three tildes are not two tools' markers, and uneven runs are not a pair.
+	assert.equal(clickWith('fmt-strikethrough', '~~~b~~~', 'b'), '~~~~~b~~~~~');
+	assert.equal(clickWith('fmt-bold', '***b**', 'b'), '*****b****');
 });
 
 /**

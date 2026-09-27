@@ -117,7 +117,11 @@ type LineMarker = {
 };
 
 const LINE_MARKERS = {
-	'fmt-quote': { prefix: INDENT, own: /^>\s+/, render: () => '> ', competing: null },
+	// The space after `>` is optional: a quote's blank line is a bare `>`, and
+	// `>text` is a quote too. Requiring it judged those lines unquoted, so a
+	// multi-paragraph quote nested instead of coming off. Only one space goes
+	// with the marker; the rest is the quoted text's own indentation.
+	'fmt-quote': { prefix: INDENT, own: /^> ?/, render: () => '> ', competing: null },
 	// The list toggles exclude a following task box from `own` so that they add
 	// their marker to a checklist item instead of un-toggling it and leaving the
 	// box behind.
@@ -304,15 +308,25 @@ function leadingRun(text: string, ch: string): number {
  * and falls through to wrapping, which is `***word***` — asking for italic on
  * bold text means both, exactly as it does when the markers are selected.
  *
+ * Except when the run is this marker and another tool's side by side, which is
+ * what `***word***` is: bold's pair and italic's. Taking this tool's half leaves
+ * the other's whole, the same exception `toggleInlineWrap` makes, so Bold there
+ * answers `*word*` and Italic `**word**` rather than wrapping a fourth and
+ * fifth asterisk around them.
+ *
  * Both sides must match, so a half-written `~~word~` is left alone rather than
  * half unwrapped.
  */
 function ownMarkerReach(id: InlineWrapToolId, before: string, after: string): number {
-	for (const marker of INLINE_WRAPS[id].strip) {
+	const { strip } = INLINE_WRAPS[id];
+	for (const marker of strip) {
 		const ch = marker[0];
-		if (trailingRun(before, ch) !== marker.length) continue;
-		if (leadingRun(after, ch) !== marker.length) continue;
-		return marker.length;
+		const run = trailingRun(before, ch);
+		if (leadingRun(after, ch) !== run) continue;
+		const besideAnotherTool = ALL_WRAP_MARKERS.some(
+			(other) => !strip.includes(other) && other[0] === ch && other.length + marker.length === run,
+		);
+		if (run === marker.length || besideAnotherTool) return marker.length;
 	}
 	return 0;
 }
