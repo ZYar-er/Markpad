@@ -2641,6 +2641,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 			// so the exported file is read at the measure it was written at
 			// instead of the 900px the exporter used to hard-code (#467).
 			contentWidth: previewContentWidth,
+			frontMatterTitle: t('frontMatter.properties', settings.language),
 		});
 		if (result?.missingImages) {
 			addToast(
@@ -2689,6 +2690,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 				mermaidTheme: currentMermaidTheme(),
 				libraries: richLibraries,
 				contentWidth: previewContentWidth,
+				frontMatterTitle: t('frontMatter.properties', settings.language),
 				osType: settings.osType,
 				printRoot: printRootEl,
 			});
@@ -4141,7 +4143,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 											ontoggle={(e) => setFrontMatterCollapsed(!(e.currentTarget as HTMLDetailsElement).open)}>
 											<summary class="frontmatter-summary">
 												<span class="frontmatter-chevron" aria-hidden="true">›</span>
-												<span class="frontmatter-title">Properties</span>
+												<span class="frontmatter-title">{t('frontMatter.properties', settings.language)}</span>
 												<span class="frontmatter-count">{frontMatterInfo.valid ? frontMatterInfo.fields.length : 0}</span>
 											</summary>
 
@@ -4198,7 +4200,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 																				id={frontMatterFieldId(field.key)}
 																				type="text"
 																				value={getFrontMatterTagDraft(field)}
-																				placeholder="Add tag"
+																				placeholder={t('frontMatter.addTag', settings.language)}
 																				autocomplete="off"
 																				enterkeyhint="done"
 																				oninput={(e) => setFrontMatterTagDraft(field, (e.currentTarget as HTMLInputElement).value)}
