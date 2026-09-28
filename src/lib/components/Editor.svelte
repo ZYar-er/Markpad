@@ -90,6 +90,7 @@
 		onprevTab,
 		onundoClose,
 		onscrollsync,
+		oncursorline,
 		// Read-only now: the wheel handler below changes the zoom through the
 		// settings store, which is what persists it and syncs it across windows,
 		// so there is no longer a value for the parent to bind back to.
@@ -112,6 +113,8 @@
 		onprevTab?: () => void;
 		onundoClose?: () => void;
 		onscrollsync?: (position: ScrollSyncPosition) => void;
+		/** The buffer line the cursor is on, whenever it moves and once on mount. */
+		oncursorline?: (line: BufferLine) => void;
 		zoomLevel?: number;
 		isSplit?: boolean;
 		theme?: string;
@@ -569,7 +572,11 @@
 
 		editor.onDidChangeCursorPosition((e) => {
 			cursorPosition = e.position;
+			oncursorline?.(asBufferLine(e.position.lineNumber));
 		});
+		// The view state above put the cursor back without an event, and a
+		// Ctrl+E into the editor wants the outline on it straight away.
+		oncursorline?.(asBufferLine(editor.getPosition()?.lineNumber ?? 1));
 
 		editor.onDidChangeCursorSelection((e) => {
 			const selections = editor.getSelections() || [];
@@ -876,7 +883,7 @@
 		if (pendingSync) {
 			const position = pendingSync;
 			pendingSync = null;
-			syncScrollToPosition(position);
+			syncScrollToPosition(position, { cursorIntoView: pendingCursorIntoView });
 		}
 		if (pendingReveal) {
 			const { startLine, endLine, placement } = pendingReveal;
@@ -2189,10 +2196,18 @@
 
 	/** A sync asked for before Monaco loaded, spent right after the view-state restore. */
 	let pendingSync: ScrollSyncPosition | null = null;
+	let pendingCursorIntoView = false;
 
-	export function syncScrollToPosition(position: ScrollSyncPosition) {
+	/**
+	 * `cursorIntoView` is Ctrl+E's, with the outline following the cursor: an
+	 * outline that marks the cursor's heading while the page shows another one
+	 * reads as wrong, so a cursor left off screen is moved to the top of it.
+	 * Split view's live sync never passes it, and never moves the cursor.
+	 */
+	export function syncScrollToPosition(position: ScrollSyncPosition, { cursorIntoView = false } = {}) {
 		if (!editorReady || !editor) {
 			pendingSync = position;
+			pendingCursorIntoView = cursorIntoView;
 			return;
 		}
 
@@ -2217,14 +2232,42 @@
 		// spent on the reader's next real scroll instead of on this one.
 		targetScroll = Math.max(0, Math.min(scrollMax, targetScroll));
 
-		if (Math.abs(editor.getScrollTop() - targetScroll) <= 5) return;
+		if (Math.abs(editor.getScrollTop() - targetScroll) > 5) {
+			isApplyingExternalScroll = true;
+			editor.setScrollTop(targetScroll, monaco.editor.ScrollType.Immediate);
 
-		isApplyingExternalScroll = true;
-		editor.setScrollTop(targetScroll, monaco.editor.ScrollType.Immediate);
+			requestAnimationFrame(() => {
+				isApplyingExternalScroll = false;
+			});
+		}
 
-		requestAnimationFrame(() => {
-			isApplyingExternalScroll = false;
-		});
+		if (cursorIntoView) moveCursorOnScreen();
+	}
+
+	function moveCursorOnScreen() {
+		const cursor = editor.getPosition();
+		const ranges = editor.getVisibleRanges();
+		if (!cursor || ranges.length === 0) return;
+
+		const first = ranges[0].startLineNumber;
+		const last = ranges[ranges.length - 1].endLineNumber;
+		if (cursor.lineNumber >= first && cursor.lineNumber <= last) return;
+
+		// Below the margin Monaco itself keeps above a cursor it reveals
+		// (`viewLines.ts`, `_computeScrollTopToRevealRange`): enough rows for
+		// the most lines sticky scroll can pin, or `cursorSurroundingLines`.
+		// Placed higher, the sticky heading can cover it, and the first
+		// keystroke scrolls the page to make that room.
+		const option = monaco.editor.EditorOption;
+		const lineHeight = editor.getOption(option.lineHeight);
+		const sticky = editor.getOption(option.stickyScroll);
+		const rows = Math.max(editor.getOption(option.cursorSurroundingLines), sticky.enabled ? sticky.maxLineCount : 0);
+		const margin = Math.min(editor.getLayoutInfo().height / lineHeight / 2, rows) * lineHeight;
+		const clear = editor.getScrollTop() + margin;
+
+		let line = first;
+		while (line < last && editor.getTopForLineNumber(line) < clear) line++;
+		editor.setPosition({ lineNumber: line, column: 1 });
 	}
 
 	// Every effect below reads `editorReady` first, and only then `editor`. See
