@@ -63,6 +63,7 @@ import {
 	type OffsetLayoutNode,
 } from './utils/previewAnchor.js';
 import { pointAtSource, sourceAtPoint, type SourceLineReader } from './utils/previewCursor.js';
+import { annotationOf, hitAt, occurrenceRanges, overlapping, rangeOf, type Annotation } from './utils/previewAnnotations.js';
 import {
 	asBufferLine,
 	asRendererLine,
@@ -1793,6 +1794,101 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		};
 	}
 
+	/**
+	 * The reader's highlights, per tab, for this session only. Each list is
+	 * tied to the source it was made on: once the text changes its points no
+	 * longer name the same words, so the list is dropped rather than drawn on
+	 * the wrong ones.
+	 */
+	let annotationsByTab = $state.raw<Record<string, { source: string; marks: Annotation[] }>>({});
+	let activeAnnotations = $derived.by(() => {
+		const entry = tabManager.activeTabId ? annotationsByTab[tabManager.activeTabId] : undefined;
+		return settings.previewAnnotations && entry && entry.source === rawContent ? entry.marks : [];
+	});
+	const canAnnotate = typeof CSS !== 'undefined' && 'highlights' in CSS;
+
+	function setAnnotations(marks: Annotation[]) {
+		const tabId = tabManager.activeTabId;
+		if (tabId) annotationsByTab = { ...annotationsByTab, [tabId]: { source: rawContent, marks } };
+	}
+
+	/** The preview selection as source points, or null when it is empty or outside the document. */
+	function selectionAnnotation(): Annotation | null {
+		const selection = window.getSelection();
+		if (!previewBlocks || !selection || selection.isCollapsed || !selection.rangeCount) return null;
+		const range = selection.getRangeAt(0);
+		return previewBlocks.contains(range.commonAncestorContainer) ? annotationOf(previewBlocks, range, readRendererLine) : null;
+	}
+
+	function annotationPointAt(e: MouseEvent) {
+		const caret = previewBlocks && document.caretRangeFromPoint(e.clientX, e.clientY);
+		return caret ? sourceAtPoint(previewBlocks!, { node: caret.startContainer, offset: caret.startOffset }, readRendererLine) : null;
+	}
+
+	/**
+	 * One Highlight per kind, kept and refilled. WebKit repaints when a
+	 * Highlight's ranges change, but not when the registry entry is swapped
+	 * for a new one: a removed highlight stayed on screen until the next click.
+	 */
+	const annotationHighlight = canAnnotate ? new Highlight() : null;
+	const occurrenceHighlight = canAnnotate ? new Highlight() : null;
+	if (annotationHighlight && occurrenceHighlight) {
+		CSS.highlights.set('markpad-annotation', annotationHighlight);
+		CSS.highlights.set('markpad-occurrence', occurrenceHighlight);
+	}
+
+	function refill(highlight: Highlight, ranges: Range[]) {
+		highlight.clear();
+		for (const range of ranges) highlight.add(range);
+	}
+
+	$effect(() => {
+		if (!annotationHighlight) return;
+		const marks = activeAnnotations;
+		const host = previewBlocks;
+		void sanitizedHtml;
+		tick().then(() => {
+			refill(annotationHighlight, host ? marks.map((mark) => rangeOf(host, mark, readRendererLine)).filter((range) => range !== null) : []);
+		});
+	});
+
+	/** Longer selections are passages, not words to look for. */
+	const OCCURRENCE_MAX_LENGTH = 100;
+	const OCCURRENCE_LIMIT = 1000;
+
+	/** The preview selection's text when it is one to look for copies of, else null. */
+	function occurrenceText(): string | null {
+		const selection = window.getSelection();
+		if (!previewBlocks || !selection || selection.isCollapsed || !selection.rangeCount) return null;
+		if (!previewBlocks.contains(selection.getRangeAt(0).commonAncestorContainer)) return null;
+		const text = selection.toString();
+		return text.trim() !== '' && !text.includes('\n') && text.length <= OCCURRENCE_MAX_LENGTH ? text : null;
+	}
+
+	/** Every copy of `text` not already highlighted, as annotations. */
+	function occurrenceAnnotations(text: string): Annotation[] {
+		if (!previewBlocks) return [];
+		const found: Annotation[] = [];
+		for (const range of occurrenceRanges(previewBlocks, text, OCCURRENCE_LIMIT)) {
+			const mark = annotationOf(previewBlocks, range, readRendererLine);
+			if (mark && !overlapping([...activeAnnotations, ...found], mark).length) found.push(mark);
+		}
+		return found;
+	}
+
+	$effect(() => {
+		if (!occurrenceHighlight || !settings.previewOccurrences) return;
+		const update = () => {
+			const text = occurrenceText();
+			refill(occurrenceHighlight, text ? occurrenceRanges(previewBlocks!, text, OCCURRENCE_LIMIT) : []);
+		};
+		document.addEventListener('selectionchange', update);
+		return () => {
+			document.removeEventListener('selectionchange', update);
+			occurrenceHighlight.clear();
+		};
+	});
+
 	function handleEditorScrollSync(position: ScrollSyncPosition) {
 		// The line the tab would record as its reading position, not the line
 		// the viewport cuts in half: `tabAnchorForEditorTopLine` is the one
@@ -2998,6 +3094,35 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		// selection goes away.
 		const editSourceTarget = getContextMenuSourceRange(e);
 
+		// Read now for the same reason: the click on the item clears the selection.
+		const selected = canAnnotate && settings.previewAnnotations ? selectionAnnotation() : null;
+		const selectedText = selected ? occurrenceText() : null;
+		const hit = !canAnnotate || !settings.previewAnnotations ? [] : selected ? overlapping(activeAnnotations, selected) : (() => {
+			const at = annotationPointAt(e);
+			return at ? hitAt(activeAnnotations, at) : [];
+		})();
+		// The highlights reading the same as the one clicked, when there is more than it.
+		const textOf = (mark: Annotation) => (previewBlocks && rangeOf(previewBlocks, mark, readRendererLine)?.toString()) ?? null;
+		const hitText = hit.length === 1 ? textOf(hit[0]) : null;
+		const sameText = hitText ? activeAnnotations.filter((mark) => textOf(mark) === hitText) : [];
+		const annotationItems: ContextMenuItem[] = hit.length
+			? [{ label: t('menu.removeTemporaryHighlight', settings.language), onClick: () => {
+				setAnnotations(activeAnnotations.filter((mark) => !hit.includes(mark)));
+				window.getSelection()?.removeAllRanges();
+			} }, ...(sameText.length > 1 ? [{ label: t('menu.removeTemporaryHighlightAll', settings.language), onClick: () => {
+				setAnnotations(activeAnnotations.filter((mark) => !sameText.includes(mark)));
+				window.getSelection()?.removeAllRanges();
+			} }] : [])]
+			: selected
+				? [{ label: t('menu.temporaryHighlight', settings.language), onClick: () => {
+					setAnnotations([...activeAnnotations, selected]);
+					window.getSelection()?.removeAllRanges();
+				} }, ...(selectedText ? [{ label: t('menu.temporaryHighlightAll', settings.language), onClick: () => {
+					setAnnotations([...activeAnnotations, ...occurrenceAnnotations(selectedText)]);
+					window.getSelection()?.removeAllRanges();
+				} }] : [])]
+				: [];
+
 		const mermaidDiag = (e.target as HTMLElement).closest('.mermaid-diagram');
 		if (mermaidDiag) {
 			mediaItems = [
@@ -3018,6 +3143,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 					const selection = window.getSelection()?.toString();
 					if (selection) invoke('clipboard_write_text', { text: selection });
 				} }] : []),
+				...annotationItems,
 				{ label: t('menu.selectAll', settings.language), onClick: () => {
 					// The document on screen. Selecting the article would select
 					// every open tab's text, including the hosts that are hidden.
