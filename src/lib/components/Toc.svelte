@@ -210,34 +210,13 @@
 				if (hideUntilLevel === 99) result.push(item);
 				continue;
 			}
-			if (item.level <= hideUntilLevel) {
-				hideUntilLevel = 99;
-				result.push(item);
-				if (foldOverrides?.has(item.foldKey)) {
-					hideUntilLevel = item.level;
-				}
-			} else {
-				if (hideUntilLevel === 99) {
-					result.push(item);
-					if (foldOverrides?.has(item.foldKey)) {
-						hideUntilLevel = item.level;
-					}
-				}
-			}
+			if (item.level > hideUntilLevel) continue;
+			result.push(item);
+			hideUntilLevel = foldOverrides?.has(item.foldKey) ? item.level : 99;
 		}
 		return result;
 	});
 
-	/**
-	 * The preview's scroll clears the highlight a click left on its target.
-	 *
-	 * Which entry is CURRENT is no longer decided here. This used to walk the
-	 * visible entries, `querySelector` each one out of the preview and measure
-	 * its box against the container — a lookup and a layout read per heading,
-	 * per scroll event, and an answer only the preview could give. Both panes
-	 * now send a source line instead (`activeLine`), and one rule picks the
-	 * entry from it.
-	 */
 	/**
 	 * Drop the "you jumped here" highlight.
 	 *

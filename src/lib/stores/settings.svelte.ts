@@ -221,13 +221,7 @@ export const PREVIEW_FONT_SIZE_RANGE: NumericSettingRange = { min: 12, max: 48, 
 export const CODE_FONT_SIZE_RANGE: NumericSettingRange = { min: 10, max: 48, step: 1, default: 14 };
 export const EDITOR_MAX_WIDTH_RANGE: NumericSettingRange = { min: 20, max: 500, step: 10, default: 80 };
 export const TOC_WIDTH_RANGE: NumericSettingRange = { min: 180, max: 420, step: 1, default: 240 };
-// The preview zoom factor, as a percentage. The 25/500 pair used to be written
-// out three times — the wheel handler and the keyboard chords in
-// MarkdownViewer.svelte and the editor's own wheel handler — beside a `100` in
-// three more places, and the stored value was read with a bare `parseInt` that
-// let a corrupt key through as NaN. `Math.min(NaN + 10, 500)` is NaN too, so
-// once that happened neither the wheel nor the chords could get back out; the
-// preview rendered `zoom: NaN` until the reset button was found.
+// Preview zoom, in percent. The only place its bounds and default live.
 export const ZOOM_LEVEL_RANGE: NumericSettingRange = { min: 25, max: 500, step: 10, default: 100 };
 
 /**
@@ -533,7 +527,7 @@ export class SettingsStore {
 	 * take away deliberately rather than as the side effect of a new setting.
 	 */
 	linksOpenInNewTab = $state(false);
-	editorMaxWidth = $state(80);
+	editorMaxWidth = $state(EDITOR_MAX_WIDTH_RANGE.default);
 	previewMaxWidth = $state(DEFAULT_PREVIEW_MAX_WIDTH);
 	// Preview ignores previewMaxWidth and fills the pane.
 	previewFullWidth = $state(false);
@@ -554,7 +548,7 @@ export class SettingsStore {
 	 * answering it again every time one is opened.
 	 */
 	splitEditorSide = $state<'left' | 'right'>('left');
-	tocWidth = $state(240);
+	tocWidth = $state(TOC_WIDTH_RANGE.default);
 	osType = $state<OSType>('unknown');
 	imageDirectory = $state('img');
 	macosImageScaling = $state(true);
@@ -567,11 +561,11 @@ export class SettingsStore {
 	titlebarToolbarPlacement = $state<Record<string, TitlebarToolbarPlacement>>({ ...DEFAULT_TITLEBAR_TOOLBAR_PLACEMENT });
 
 	editorFont = $state('Consolas');
-	editorFontSize = $state(14);
+	editorFontSize = $state(EDITOR_FONT_SIZE_RANGE.default);
 	previewFont = $state('Segoe UI');
-	previewFontSize = $state(16);
+	previewFontSize = $state(PREVIEW_FONT_SIZE_RANGE.default);
 	codeFont = $state('Consolas');
-	codeFontSize = $state(14);
+	codeFontSize = $state(CODE_FONT_SIZE_RANGE.default);
 
 	// File-save behavior: on, edits are persisted without Cmd+S; off, they are
 	// kept until saved and closing asks. One switch, because that is the number
