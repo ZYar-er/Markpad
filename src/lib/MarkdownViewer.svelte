@@ -108,6 +108,7 @@ import {
 import { tabManager, type Tab } from './stores/tabs.svelte.js';
 import { snapshotTab } from './utils/tabTransfer.js';
 import { outgoingTabAnchorLine } from './utils/editorPosition.js';
+import { createPaneSlider, planPaneSlide, type PanesShown } from './utils/paneSlide.js';
 import { adjustPreviewMaxWidth, getPreviewContentWidth } from './utils/previewWidth.js';
 import { isTocOverhanging } from './utils/tocOverlay.js';
 import { splitRatioAfterMove } from './utils/splitPanes.js';
@@ -1149,17 +1150,17 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	 * `isSplit`, `splitRatio`, and `isMarkdown` off the path — so switching to a
 	 * tab in another mode changes exactly the values that toggling that mode
 	 * inside one tab changes, and the transitions written for the toggle fire
-	 * for the switch: `.pane` slides its `flex` over 0.3s, `.layout-container`
-	 * and `.editor-pane` slide their padding, the outline wrapper slides its
-	 * box-shadow and edges. Three hundred milliseconds of the text reflowing
-	 * under the reader, on a gesture whose whole content is "show me the other
-	 * document".
+	 * for the switch: `.layout-container` and `.editor-pane` slide their
+	 * padding, the outline wrapper slides its box-shadow and edges. Three
+	 * hundred milliseconds of the text reflowing under the reader, on a gesture
+	 * whose whole content is "show me the other document". The panes' own slide
+	 * is not a CSS transition; `paneSlider` skips a tab switch itself.
 	 *
 	 * The suppression is `foldLayout.ts`'s, for the same reason and in the same
 	 * shape: suppress, let the new values commit, restore. The class is added
 	 * through the element rather than through a `class:` directive because the
 	 * ordering is the entire mechanism — this effect runs after Svelte has
-	 * written the new `flex` into the DOM and before the browser has recomputed
+	 * written the new geometry into the DOM and before the browser has recomputed
 	 * style, so a class that lands in a later flush would land after the
 	 * transitions had already started. Reading `offsetHeight` forces that
 	 * recompute here, while the transitions are off; removing the class then
@@ -1179,6 +1180,36 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		}
 		showHome = false;
 		findOpen = false;
+	});
+
+	/*
+	 * A view mode switch slides its panes; `utils/paneSlide.ts` says how. The
+	 * boxes and the editor's content are read before the DOM update, the slide
+	 * starts after it. A tab switch is not a mode switch and does not slide
+	 * (see the effect above).
+	 */
+	const paneSlider = createPaneSlider();
+	let panesShown: { tabId: string | null; shown: PanesShown } | null = null;
+
+	$effect.pre(() => {
+		const now = { tabId: tabManager.activeTabId, shown: { editor: isEditing || isSplit, viewer: !isEditing || isSplit } };
+		untrack(() => {
+			const last = panesShown;
+			panesShown = now;
+			if (!last || last.tabId !== now.tabId) return paneSlider.settle();
+			const plan = planPaneSlide(last.shown, now.shown);
+			if (plan && layoutContainerEl && editorPaneEl && viewerPaneEl)
+				paneSlider.capture({ container: layoutContainerEl, editor: editorPaneEl, viewer: viewerPaneEl }, plan);
+		});
+	});
+
+	$effect(() => {
+		void isEditing;
+		void isSplit;
+		untrack(() => {
+			if (layoutContainerEl && editorPaneEl && viewerPaneEl)
+				paneSlider.play({ container: layoutContainerEl, editor: editorPaneEl, viewer: viewerPaneEl });
+		});
 	});
 
 	$effect(() => {
@@ -2305,9 +2336,9 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	/**
 	 * The preview half of #799. The restore effect cannot do it: the article
 	 * stays mounted at zero width in edit mode, so nothing it depends on changes
-	 * with the mode. The pane takes its real width in the same frame (it fades
-	 * in, it does not slide), so the line is placed right after the render,
-	 * before the old position is ever painted.
+	 * with the mode. The pane takes its real width in the same frame (its slide
+	 * is a `transform`, see `utils/paneSlide.ts`), so the line is placed right
+	 * after the render, before the old position is ever painted.
 	 */
 	async function restoreAfterLeavingEditor(tabId: string, position: ScrollSyncPosition) {
 		await tick();
@@ -4991,10 +5022,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
-		/* Opacity, not flex: animating the width re-wraps every line of the
-		   document on every frame. The width lands in one frame and the pane
-		   that appears fades in over text that has already stopped moving. */
-		transition: opacity 0.15s ease;
 		min-width: 0;
 	}
 
@@ -5037,10 +5064,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		flex: 0 !important;
 		opacity: 0;
 	}
-
-	/* Split Mode Transition Logic */
-	/* Editor slides in from left */
-	/* Viewer slides right */
 
 	.pane {
 		height: 100%;
@@ -5188,10 +5211,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	}
 
 	.editor-pane {
-		/* Restates `.pane`'s opacity: this rule replaces its whole list. */
-		transition:
-			padding 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-			opacity 0.15s ease;
+		transition: padding 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 	}
 
 	.toc-overlay-wrapper.on-right {
