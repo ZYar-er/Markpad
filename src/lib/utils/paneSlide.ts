@@ -2,12 +2,9 @@
  * The view mode switch's slide: panes move across the window without their
  * text re-wrapping.
  *
- * The switch used to transition each pane's `flex` over 0.3s, which changes
- * the preview's width on every frame and re-wraps the whole document ~18
- * times. Here the layout lands at its final widths in one frame, and only
- * `transform` animates: it moves painted layers and lays nothing out. So the
- * reading position can be placed at once (`restoreAfterLeavingEditor`), not
- * after the slide.
+ * The layout jumps to its final widths in one frame and only `transform`
+ * animates, so text never re-wraps mid-slide and the reading position can be
+ * restored at once (`restoreAfterLeavingEditor`).
  *
  * - The pane that appears slides in from its outer edge, and the splitter rides
  *   on its inner edge, so the divider still travels across the window.
@@ -19,11 +16,11 @@
  *   Otherwise it slides out and uncovers the pane that widened.
  */
 
-export type PaneSide = 'editor' | 'viewer';
+type PaneSide = 'editor' | 'viewer';
 export type PanesShown = { editor: boolean; viewer: boolean };
-export type PaneSlidePlan = { entering: PaneSide | null; leaving: PaneSide | null };
+type PaneSlidePlan = { entering: PaneSide | null; leaving: PaneSide | null };
 
-export const PANE_SLIDE: KeyframeAnimationOptions = { duration: 300, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' };
+const PANE_SLIDE: KeyframeAnimationOptions = { duration: 300, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' };
 
 /** Which pane comes and which goes; null when the same panes stay on screen. */
 export function planPaneSlide(last: PanesShown, now: PanesShown): PaneSlidePlan | null {
