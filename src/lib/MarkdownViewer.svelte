@@ -2826,18 +2826,10 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	}
 
 	/**
-	 * Every image in the preview whose source is a local file has already been
-	 * turned into an asset URL by `processMarkdownHtml`, so `img.src` is one of
-	 * three things: an asset URL, a remote `http(s)` URL, or a `data:` URL.
-	 *
-	 * `convertFileSrc` does not spell the first one the same way everywhere:
-	 * Windows gets `http://asset.localhost/<encoded path>`, everything else
-	 * gets `asset://localhost/<encoded path>`. The old `src.startsWith('asset:')`
-	 * test only recognised the second, so on Windows every local image fell
-	 * into the remote branch — which could never work either (see below).
-	 * `normalizeAssetPath` (#363) knows both shapes and, unlike a
-	 * `startsWith('http://asset.localhost')` test, does not accept a lookalike
-	 * host such as `http://asset.localhost.evil.test/`.
+	 * `img.src` is an asset URL, a remote URL or a `data:` URL.
+	 * `normalizeAssetPath` recognises both asset URL forms (Windows
+	 * `http://asset.localhost/…`, others `asset://localhost/…`) and rejects
+	 * lookalike hosts (#363).
 	 */
 	async function saveImageAs(src: string) {
 		const realPath = normalizeAssetPath(src) ?? '';
@@ -2903,14 +2895,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		if (!editorPane) return;
 		e.preventDefault();
 
-		// Monaco's menu printed a chord beside every item. Kept for the two
-		// below, where the menu entry is most of how anyone finds out the
-		// shortcut exists, and dropped for cut/copy/paste, which nobody needs
-		// told.
-		//
-		// `formatChord` rather than two literals, so the Mac and Windows
-		// spellings cannot drift apart. F1 has no modifier and is the same
-		// everywhere.
+		// Chords only for the two items people learn the shortcut from.
 		const chord = (c: string) => formatChord(c, modifierFor(settings.osType));
 
 		docContextMenu = {
@@ -2918,21 +2903,11 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 			x: e.clientX,
 			y: e.clientY,
 			items: [
-				// No chord printed beside these three: ⌘X/⌘C/⌘V are the one set of
-				// shortcuts nobody needs told, and the reminder costs a column of
-				// width in every language.
 				{ label: t('menu.cut', settings.language), onClick: () => editorPane?.cutToClipboard() },
 				{ label: t('menu.copy', settings.language), onClick: () => editorPane?.copyToClipboard() },
 				{ label: t('menu.paste', settings.language), onClick: () => editorPane?.pasteFromClipboard() },
 				{ separator: true },
-				// The two Monaco put here that this app can actually use, and
-				// that drawing our own menu would otherwise have taken away.
-				// Everything else it contributes — Go to Symbol, Quick Fix,
-				// Format, Rename — needs a language provider Markdown has none
-				// of, and never appeared.
-				//
-				// Translated here, which they were not before: Monaco's menu is
-				// English whatever the app's language is.
+				// Monaco's other items need a language provider Markdown lacks.
 				{
 					label: t('menu.commandPalette', settings.language),
 					shortcut: 'F1',
@@ -2948,44 +2923,19 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	}
 
 	/**
-	 * Every copy in this app puts plain text on the clipboard, and #548 gave the
-	 * editor one implementation for all six of its entry points. Two entry points
-	 * were left outside it, both reading a DOM selection rather than the editor's:
-	 * ⌘C in the preview, and Edit ▸ Copy in the menu bar (a
-	 * `PredefinedMenuItem::copy`, which asks the WEBVIEW to copy). Those two ended
-	 * up plain text as well, but by accident rather than by decision — WebKit's
-	 * own copy writes a WebArchive beside the text, and the only reason ours has
-	 * none is that `LegacyWebArchive` skips its subresource sweep when the page's
-	 * origin is not in the http family, which `tauri://localhost` is not. Under
-	 * `tauri dev` the same selection carries 19MB (#549): the sweep embeds every
-	 * cached script for the origin, so ten words of prose arrive with the whole
-	 * unbundled module graph attached.
-	 *
-	 * Cancelling the copy event is what WebKit checks first (`Editor::copy` →
-	 * `tryDHTMLCopy`), before it builds any of that, and it is checked whatever
-	 * the origin — so this makes the plain-text result ours on both, instead of
-	 * a property of the scheme that an upstream change could take back.
-	 *
-	 * The carve-out mirrors WebKit's own (`Editor::performCutOrCopy`): a selection
-	 * inside an input or textarea already gets plain text and no archive, and
-	 * `window.getSelection()` cannot read it, so cancelling there would copy an
-	 * empty string. Monaco takes input through a hidden textarea and is covered by
-	 * the same test — as it should be, since the editor has its own path.
+	 * The preview's copy: plain text plus HTML, from `copyableFlavours`.
+	 * Cancelling the native copy stops WebKit from also writing a WebArchive,
+	 * which measured 19 MB under `tauri dev` (#549). Text fields and Monaco's
+	 * hidden textarea are skipped: `getSelection()` cannot read their
+	 * selection, so cancelling there would copy an empty string.
 	 */
 	function handleCopy(e: ClipboardEvent) {
 		const active = document.activeElement;
 		if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
 		const selection = window.getSelection();
 		if (!selection || selection.isCollapsed || !selection.rangeCount || !e.clipboardData) return;
-		// The rich flavour #549 deliberately left out, now that "plain or rich"
-		// has an answer (#674): a preview is rendered content, and copying
-		// rendered content is expected to keep its formatting — it is what a
-		// browser and VS Code's own Markdown preview both do.
-		//
-		// Writing both ourselves is what keeps #549's result: the native copy is
-		// still cancelled, so WebKit never builds the WebArchive flavour that
-		// measured 19 MB for one selection. What lands on the clipboard is these
-		// two strings and nothing else.
+		// Rendered content keeps its formatting when copied (#674), as in a
+		// browser or VS Code's Markdown preview.
 		const { text, html } = copyableFlavours(selection, currentFile);
 		e.clipboardData.setData('text/plain', text);
 		e.clipboardData.setData('text/html', html);
@@ -3088,12 +3038,16 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		};
 	}
 
+	// HTML links only: an SVG `<a>` (inside a diagram) is not handled.
+	function linkAt(target: EventTarget | null): HTMLAnchorElement | null {
+		const link = target instanceof Element ? target.closest('a') : null;
+		return link instanceof HTMLAnchorElement ? link : null;
+	}
+
 	function handleMouseOver(event: MouseEvent) {
 		if (mode !== 'app') return;
-		let target = event.target as HTMLElement;
-		while (target && target.tagName !== 'A' && target !== document.body) target = target.parentElement as HTMLElement;
-		if (target?.tagName === 'A') {
-			const anchor = target as HTMLAnchorElement;
+		const anchor = linkAt(event.target);
+		if (anchor) {
 			const rawHref = anchor.getAttribute('href') || '';
 
 			// tooltip for same-page anchor links: show text of target header
@@ -3132,13 +3086,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 				}
 			}
 
-			// `rawHref`, which the two branches above already use, rather than the
-			// anchor's resolved property. The DOM resolves that against the
-			// webview's own origin, so `[3.md](./3.md)` previewed as
-			// `tauri://localhost/3.md` — a scheme that is an implementation detail
-			// of the shell the app runs in, and a path that is not where the file
-			// is. Undoing the same resolution is what `resolveLocalFileLinkPath`
-			// exists for on the click side.
+			// The raw href. The DOM-resolved one starts with `tauri://localhost`.
 			if (rawHref) {
 				const rect = anchor.getBoundingClientRect();
 				tooltip = { show: true, text: rawHref, shortcut: '', html: '', isFootnote: false, x: rect.left + rect.width / 2, y: rect.top - 8, align: 'top' };
@@ -3147,17 +3095,13 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	}
 
 	function handleMouseOut(event: MouseEvent) {
-		let target = event.target as HTMLElement;
-		while (target && target.tagName !== 'A' && target !== document.body) target = target.parentElement as HTMLElement;
-		if (target?.tagName === 'A') tooltip.show = false;
+		if (linkAt(event.target)) tooltip.show = false;
 	}
 
 	async function handleDocumentClick(event: MouseEvent) {
 		if (mode !== 'app') return;
-		let target = event.target as HTMLElement;
-		while (target && target.tagName !== 'A' && target !== document.body) target = target.parentElement as HTMLElement;
-		if (target?.tagName === 'A') {
-			const anchor = target as HTMLAnchorElement;
+		const anchor = linkAt(event.target);
+		if (anchor) {
 			const rawHref = anchor.getAttribute('href');
 			if (!rawHref) return;
 
@@ -3231,23 +3175,9 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 			const rawContent = tab.rawContent;
 			if (tab.previewedRawContent === rawContent) return;
 
-			// 120ms, and the reason is arithmetic rather than taste. This is a
-			// trailing debounce in front of the whole preview pipeline — one
-			// `render_markdown` round trip to Rust, `processMarkdownHtml`,
-			// DOMPurify, the block patch, then KaTeX, highlight.js
-			// and Mermaid over what it changed — and it arrived at 16ms with the split
-			// view (ef219cf), unexplained. 16ms merges nothing a human types: even
-			// inside a fast burst keystrokes land 60–80ms apart, and at a normal
-			// pace roughly 125ms apart. Every character therefore started its own
-			// pipeline, and since the pipeline is async and only its *result* is
-			// dropped by the revision check below, several ran at once and all of
-			// the work was done regardless.
-			//
-			// 120ms sits above the burst interval, so a word typed at speed costs
-			// one render rather than five, and below the pause someone takes to
-			// look at what they wrote — the preview catches up about an eighth of a
-			// second after the last key. Much larger reads as the preview lagging
-			// the cursor; much smaller is the 16ms case again.
+			// 120ms: above the gap between keys in a fast burst (60-80ms), so a
+			// word costs one render, and below the pause before a reader looks at
+			// the preview.
 			const timer = setTimeout(() => {
 				renderMarkdownPreview(rawContent, tab.path, tab.foldOverrides)
 					.then((processed) => {
@@ -3277,15 +3207,9 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		if (!tab) return;
 
 		if (!tab.isSplit) {
-			// Split view puts an editor on the buffer, and the first keystroke
-			// arms auto-save. Two buffers must never reach that point: an empty
-			// one (restored tab whose content was never read) and a partial one
-			// (large file whose background read has not landed, or was dropped
-			// because the user entered split during the ~2s window). The old
-			// guard was `!tab.rawContent`, which a partial buffer satisfies —
-			// so split view edited the truncated text and auto-save wrote it
-			// back over the whole file. `toggleEdit` always re-reads, which is
-			// why the same bug never reached the full editor.
+			// Split view is an editor, and its first keystroke arms auto-save.
+			// The buffer must be complete first (not empty, not a large file's
+			// partial read), or auto-save writes a truncated file.
 			if (tab.path && !tab.isEditing && !tab.rawContent) {
 				try {
 					// Checked, like every other read that fills an editable
@@ -3305,12 +3229,8 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 			}
 			tabManager.setSplitEnabled(tab.id, true);
 		} else {
-			// Closing split view is the same move as leaving edit mode, and it
-			// gets the same treatment: the surviving pane renders the buffer,
-			// so no save has to happen first and nothing is asked. The split
-			// preview was already rendering that buffer on every keystroke —
-			// the old `loadMarkdown` here swapped it for the disk version at
-			// the last moment, which is why the dirty tab had to be flushed.
+			// Like leaving edit mode: the surviving pane renders the buffer, so
+			// nothing is saved or asked.
 			await flushBeforeLeavingEditableMode(tab);
 			tabManager.setSplitEnabled(tab.id, false);
 			await renderPreviewLeavingEditableMode(tab);
@@ -3336,20 +3256,10 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	}
 
 	/*
-	 * WHICH command a keystroke means is decided by `viewerKeymap.ts`; what is
-	 * left here is which of this component's functions each command runs.
-	 *
-	 * The split is #644's, applied to the other end of the file: the branch
-	 * structure was unreachable from a test while it lived in a `.svelte` file,
-	 * so fourteen assertions across four files read it as TEXT instead, and #647
-	 * turned five of them red on a rename that changed no behaviour. The chord
-	 * logic imports now; the table below is the residue, and
-	 * `keymapHarness.viewerCommandTable()` is the one reader of it left.
-	 *
-	 * Every command preventDefaults, which is why the call does it once rather
-	 * than twenty-two times. A chord the app does not bind — and the two it
-	 * deliberately leaves to someone else, macOS's ⌘Q and Mod+F inside Monaco —
-	 * comes back null and is not prevented.
+	 * `viewerKeymap.ts` decides which command a keystroke means. This maps each
+	 * command to the function that runs it. Every command is preventDefaulted
+	 * here. An unbound chord, macOS ⌘Q, or Mod+F inside Monaco comes back null
+	 * and is not prevented.
 	 */
 	function keyContext(): KeyContext {
 		const active = document.activeElement as Node | null;
@@ -3394,24 +3304,12 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 			case 'toggle-zen-mode':
 				return settings.toggleZenMode();
 			case 'toggle-edit-view':
-				// The `silentSave` argument this used to pass meant "suppress the
-				// unsaved-changes modal on the hotkey path". There is no modal on a
-				// view toggle any more, and a keystroke that says "show me the other
-				// pane" is not a request to write the file: whether a dirty tab is
-				// flushed is now decided by the user's auto-save setting alone,
-				// identically for the hotkey and the toolbar button.
 				return void toggleEditView();
 			case 'save-as':
 				return void saveContentAs();
 			case 'save': {
-				// Reading mode used to swallow the shortcut entirely. An untitled
-				// buffer reaches it with content still unsaved — `toggleEdit` only
-				// runs its save flow for tabs that already have a path — so the only
-				// way to keep that text was to switch back to the editor first.
-				// Saving is never mode-specific; the guard asks whether there is
-				// anything to write, not which pane is visible. A saved, unmodified
-				// document stays a no-op so the shortcut cannot churn its mtime and
-				// wake the file watcher.
+				// Save from any mode. An untitled buffer has content to write. A
+				// clean saved file is a no-op, so its mtime does not wake the watcher.
 				const saveTarget = tabManager.activeTab;
 				if (saveTarget && (saveTarget.isDirty || saveTarget.path === '')) saveContent();
 				return;
@@ -4082,7 +3980,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 					class:toc-resizing={isTocResizing}
 					style="--toc-width: {settings.tocWidth}px; --pane-top-chrome: {paneTopChrome}px;">
 					<!-- Editor Pane -->
-					<div bind:this={editorPaneEl} class="pane editor-pane" class:active={hasEditorPane} style="flex: {isSplit ? tabManager.activeTab.splitRatio : isEditing ? 1 : 0}">
+					<div bind:this={editorPaneEl} class="pane editor-pane" style:flex={isSplit ? tabManager.activeTab.splitRatio : null}>
 						{#if hasEditorPane}
 							{#if settings.showEditorToolbar}
 								<div bind:clientHeight={editorToolbarHeight} transition:slide={{ duration: 150 }}>
@@ -4145,8 +4043,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 						bind:this={viewerPaneEl} 
 						bind:clientWidth={viewerWidth}
 						class="pane viewer-pane" 
-						class:active={!isEditing || isSplit} 
-						style="flex: {isSplit ? 1 - tabManager.activeTab.splitRatio : (!isEditing) ? 1 : 0}">
+						style:flex={isSplit ? 1 - tabManager.activeTab.splitRatio : null}>
 
 						<FindBar
 							bind:this={findBar}
@@ -4159,7 +4056,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 								<article
 									bind:this={markdownBody}
 									contenteditable="false"
-									class="markdown-body {settings.previewFullWidth ? 'full-width' : ''} {settings.showToc ? 'toc-active' : ''}"
+									class="markdown-body {settings.previewFullWidth ? 'full-width' : ''}"
 									class:toc-in-gutter={settings.showToc && !settings.pinnedToc && !isOverhanging}
 									onscroll={handleScroll}
 									onclick={handleLinkClick}
@@ -4277,12 +4174,8 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 										see `previewHosts`. The children are filled by the block patch,
 										not by Svelte.
 
-										`display` and not `visibility`, `opacity` or a zero height. A
-										hidden host must cost no layout — that is the point — and it is
-										also what keeps `@media print` in styles.css correct without
-										listing these divs: a `display: none` subtree does not print,
-										so the export captures the tab on screen rather than every open
-										document concatenated.
+										`display`, not `visibility` or a zero height: a hidden host must
+										cost no layout.
 									-->
 									{#each tabManager.tabs as tab (tab.id)}
 										<div
@@ -4672,17 +4565,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 
 
 
-	@keyframes slideIn {
-		from {
-			opacity: 0;
-			transform: translateY(12px);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0);
-		}
-	}
-
 	:global(.youtube-link) {
 		display: block;
 		max-width: 100%;
@@ -4894,17 +4776,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		opacity: 1;
 	}
 
-	@keyframes fadeIn {
-		from {
-			opacity: 0;
-			transform: scale(0.98);
-		}
-		to {
-			opacity: 1;
-			transform: scale(1);
-		}
-	}
-
 	.loading-screen {
 		position: fixed;
 		top: 36px;
@@ -4962,6 +4833,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		padding-top: 36px;
 		box-sizing: border-box;
 		overflow: hidden;
+		transition: padding 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 	}
 
 	/**
@@ -4982,13 +4854,8 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		flex-direction: column;
 		overflow: hidden;
 		min-width: 0;
-	}
-
-	.pane.editor-pane {
-		background: var(--color-canvas-default);
-	}
-
-	.pane.viewer-pane {
+		height: 100%;
+		position: relative;
 		background: var(--color-canvas-default);
 	}
 
@@ -5022,11 +4889,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		width: 0 !important;
 		flex: 0 !important;
 		opacity: 0;
-	}
-
-	.pane {
-		height: 100%;
-		position: relative;
 	}
 
 	.split-bar {
@@ -5148,19 +5010,8 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		border-left: 1px solid transparent;
 		box-shadow: 10px 0 30px rgba(0, 0, 0, 0);
 		transition: box-shadow 0.3s ease, border-color 0.3s ease, left 0.3s ease, right 0.3s ease, width 0.2s ease;
-		order: -1;
 	}
 
-	.toc-overlay-wrapper.is-pinned {
-		position: relative;
-		top: 0 !important;
-		height: 100%;
-		z-index: 10;
-		background-color: transparent;
-		backdrop-filter: none;
-		-webkit-backdrop-filter: none;
-		box-shadow: none !important;
-	}
 	.layout-container.editing.has-pinned-toc.toc-on-left .editor-pane {
 		padding-left: 40px;
 	}
@@ -5176,15 +5027,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	.toc-overlay-wrapper.on-right {
 		left: auto;
 		right: 0;
-		order: 2;
-	}
-
-	.toc-overlay-wrapper.is-pinned.on-right {
-		border-left-color: var(--color-border-default);
-	}
-	
-	.toc-overlay-wrapper.is-pinned:not(.on-right) {
-		border-right-color: var(--color-border-default);
 	}
 
 	.toc-overlay-wrapper.is-overhanging:not(.is-pinned) {
@@ -5292,10 +5134,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		transform: rotate(0deg);
 	}
 
-	.layout-container {
-		transition: padding 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-	}
-
 	.layout-container.toc-resizing,
 	.layout-container.toc-resizing .toc-overlay-wrapper,
 	.layout-container.toc-resizing .toc-toggle-floating {
@@ -5312,17 +5150,12 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	}
 
 	.toc-overlay-wrapper.is-pinned {
-		position: absolute; /* Keep it absolute but it will stay in the padded area */
-		top: 36px !important;
-		left: 0;
-		height: calc(100% - 36px);
-		background-color: var(--color-canvas-default);
+		z-index: 10;
+		box-shadow: none !important;
 		border-right: 1px solid var(--color-border-default);
 	}
 
 	.toc-overlay-wrapper.is-pinned.on-right {
-		left: auto;
-		right: 0;
 		border-right: none;
 		border-left: 1px solid var(--color-border-default);
 	}
