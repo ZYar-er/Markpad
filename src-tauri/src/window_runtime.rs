@@ -86,10 +86,22 @@ pub struct PinnedTag {
     pub files: Vec<String>,
 }
 
-fn pinned_tags_path(app: &AppHandle) -> Result<std::path::PathBuf, crate::error::Error> {
+/// `name` in the app config dir, which is created if missing.
+fn config_file(app: &AppHandle, name: &str) -> Result<PathBuf, crate::error::Error> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir)?;
-    Ok(dir.join("pinned-tags.json"))
+    Ok(dir.join(name))
+}
+
+fn remove_if_exists(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn pinned_tags_path(app: &AppHandle) -> Result<PathBuf, crate::error::Error> {
+    config_file(app, "pinned-tags.json")
 }
 
 /// Reads the pin list, treating an unreadable or unparseable file as empty.
@@ -133,55 +145,9 @@ fn read_pinned_tags(app: &AppHandle) -> Vec<PinnedTag> {
 /// on disk:  [x]                             [x, a]        [x, b]   ← "a" gone
 /// ```
 ///
-/// Tauri dispatches commands on a thread pool and every window can call these,
-/// so the interleaving is reachable whenever two windows persist their pins at
-/// once — which is exactly what quitting with ⌘Q does, since each window saves
-/// its pinned tag from its own close handler.
-///
-/// This is the same defect the frontend fixed in #405 for the recent-files
-/// list, where a re-read alone was enough. The previous revision of this
-/// comment — written here, by #424, the change that added this lock —
-/// explained why by saying that `localStorage` is per-document and
-/// single-threaded,
-/// "making an RMW cycle atomic by construction". That is false, and it is
-/// corrected here rather than softened, because someone reasoning from it
-/// about some other shared `localStorage` key would conclude they need no
-/// synchronisation at all. Each *document* is single-threaded; two Markpad
-/// windows are two documents sharing one origin's storage area. The storage
-/// mutex the HTML standard describes for exactly this case is not implemented
-/// by any shipping engine, WebKit and WebView2 included, so a `getItem` …
-/// `setItem` pair in one window can interleave with the other window's and
-/// lose precisely the update drawn above.
-///
-/// What the re-read buys is a narrower window, not atomicity:
-///
-/// - Before it, the exposure was the whole lifetime of a window's in-memory
-///   copy — from the last time that window looked at the list until it next
-///   wrote, which is minutes. After it, the cycle is one synchronous turn of
-///   the event loop containing no `await`: `getItem`, a `JSON.parse` of at
-///   most nine short strings, `setItem`.
-/// - The writes happen on discrete user actions (open a file, remove an
-///   entry, rename), so colliding means two windows landing inside those
-///   microseconds.
-/// - What a collision costs is one entry of a recent-file list, which the
-///   next open puts back.
-///
-/// It is a residual race, accepted on those three grounds — not a guarantee.
-/// None of the three holds here. This cycle is a file read, a parse, a
-/// serialize and an `atomic_write`: milliseconds of I/O on a preemptively
-/// scheduled thread pool, not microseconds of straight-line JS. The collision
-/// is not a coincidence but the ordinary shape of quitting, since ⌘Q makes
-/// every window write from its own close handler at once. And a dropped pin is
-/// a thing the user made, with nothing to recreate it from. Unlocked, this
-/// cycle was measured losing updates; hence the lock.
-///
-/// Serialising also keeps two `atomic_write` calls off the same target at
-/// once, which is not something `atomic_write` handles either: its temp file
-/// is named from the target name, the pid and a nanosecond clock reading, so
-/// two threads of one process that land on the same reading collide on
-/// `create_new` — and the loser's cleanup then deletes the temp file the
-/// winner was about to rename. Both spellings of that failure showed up in the
-/// unlocked measurements (`File exists`, `No such file or directory`).
+/// Tauri runs commands on a thread pool and ⌘Q makes every window save its
+/// pin from its own close handler at once, so this interleaving is the normal
+/// case. Unlocked, this cycle was measured losing pins.
 fn update_pinned_tags(
     lock: &Mutex<()>,
     path: &Path,
@@ -336,7 +302,7 @@ pub fn set_window_meta(
     tab_count: usize,
 ) {
     let label = window.label().to_string();
-    if label != "main" && !label.starts_with("window-") {
+    if !is_viewer_label(&label) {
         return;
     }
     let mut registry = lock_recover(&state.window_registry);
@@ -465,10 +431,8 @@ pub async fn show_window(window: tauri::Window) {
     let _ = window.set_focus();
 }
 
-fn window_state_path(app: &AppHandle) -> Result<std::path::PathBuf, crate::error::Error> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&dir)?;
-    Ok(dir.join("window-state-v2.json"))
+fn window_state_path(app: &AppHandle) -> Result<PathBuf, crate::error::Error> {
+    config_file(app, "window-state-v2.json")
 }
 
 /// Persists the session snapshot atomically.
@@ -492,17 +456,11 @@ pub fn load_window_state(app: AppHandle) -> Option<String> {
 
 #[tauri::command]
 pub fn clear_window_state(app: AppHandle) -> Result<(), String> {
-    let path = window_state_path(&app)?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    remove_if_exists(&window_state_path(&app)?)
 }
 
-fn restore_progress_path(app: &AppHandle) -> Result<std::path::PathBuf, crate::error::Error> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&dir)?;
-    Ok(dir.join("restore-progress-v1.json"))
+fn restore_progress_path(app: &AppHandle) -> Result<PathBuf, crate::error::Error> {
+    config_file(app, "restore-progress-v1.json")
 }
 
 /// Publishes the restore breadcrumb by rename, but without `atomic_write`'s
@@ -561,11 +519,12 @@ pub fn load_restore_progress(app: AppHandle) -> Option<String> {
 
 #[tauri::command]
 pub fn clear_restore_progress(app: AppHandle) -> Result<(), String> {
-    let path = restore_progress_path(&app)?;
-    if path.exists() {
-        fs::remove_file(path).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    remove_if_exists(&restore_progress_path(&app)?)
+}
+
+/// A document window: the main one or a detached-tab one.
+fn is_viewer_label(label: &str) -> bool {
+    label == "main" || label.starts_with("window-")
 }
 
 pub fn bring_to_front(window: &tauri::WebviewWindow) {
@@ -578,7 +537,7 @@ pub fn pick_delivery_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     let viewers: Vec<tauri::WebviewWindow> = app
         .webview_windows()
         .into_iter()
-        .filter(|(label, _)| label == "main" || label.starts_with("window-"))
+        .filter(|(label, _)| is_viewer_label(label))
         .map(|(_, window)| window)
         .collect();
 
@@ -665,8 +624,14 @@ pub fn handle_single_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
     bring_to_front(&window);
 }
 
-pub fn create_transfer_window(app: AppHandle, token: String) -> Result<(), String> {
-    let label = format!("window-{token}");
+/// Creates the destination window for a tab transfer. Its label carries the
+/// token, so the new frontend knows which transfer to claim.
+///
+/// Async on purpose: a sync command runs on the main thread, and WebView2
+/// deadlocks building a window there (tauri-apps/tauri#12521).
+#[tauri::command]
+pub async fn create_transfer_window(app: AppHandle, token: String) -> Result<(), String> {
+    let label = crate::tab_transfer::destination_label(&token);
     #[allow(unused_mut)]
     let mut builder =
         tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
@@ -806,7 +771,7 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     match event {
         tauri::WindowEvent::Focused(true) => {
             let label = window.label();
-            if label == "main" || label.starts_with("window-") {
+            if is_viewer_label(label) {
                 let state = window.state::<AppState>();
                 *lock_recover(&state.last_focused_viewer) = Some(label.to_string());
             }

@@ -1,7 +1,5 @@
 //! The Tauri application itself: the builder chain, the macOS menu, and the
 //! command registry.
-//!
-//! Split out of `lib.rs`; the code is unchanged.
 
 use crate::window_runtime::{AppState, WatcherState};
 use crate::{asset_protocol, commands, tab_transfer, window_runtime};
@@ -258,7 +256,7 @@ pub fn run() {
             tab_transfer::claim_detached_tab,
             tab_transfer::complete_detached_tab,
             tab_transfer::cancel_detached_tab,
-            commands::create_transfer_window,
+            window_runtime::create_transfer_window,
             window_runtime::set_window_meta,
             window_runtime::list_viewer_windows,
             window_runtime::is_window_tag_taken,
