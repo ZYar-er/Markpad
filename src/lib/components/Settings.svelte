@@ -406,16 +406,8 @@
 
 	function getCurrentSettingsModalFrame(): ConcreteSettingsModalFrame | null {
 		if (!settingsModal) return null;
-		const rect = settingsModal.getBoundingClientRect();
-		const limits = getSettingsModalLimits();
-		const width = clampNumber(rect.width, limits.minWidth, limits.maxWidth);
-		const height = clampNumber(rect.height, limits.minHeight, limits.maxHeight);
-		return {
-			width,
-			height,
-			left: clampNumber(rect.left, 0, Math.max(0, limits.viewportWidth - width)),
-			top: clampNumber(rect.top, 0, Math.max(0, limits.viewportHeight - height)),
-		};
+		const { width, height, left, top } = settingsModal.getBoundingClientRect();
+		return clampSettingsModalFrame({ width, height, left, top });
 	}
 
 	function clampSettingsModalFrame(frame: ConcreteSettingsModalFrame): ConcreteSettingsModalFrame {
@@ -2139,24 +2131,10 @@
 	}
 
 	/*
-	 * Not every row in this modal is a label-and-control row.
-	 *
-	 * The VS Code theme block is two stacked lines (a caption with a "Browse
-	 * themes" link, then a URL field with an Import button); the delete-theme
-	 * action is a single right-aligned link. Both used to be spelled as
-	 * `.setting-item` with inline `flex-direction: column` — they wanted the
-	 * row's border and rhythm, not its columns. That worked only because
-	 * `.setting-item` was `justify-content: space-between` and sized nothing;
-	 * once it grew a label column, the inline override left the theme <select>
-	 * as the only child of an unclassed div nobody styled, and `.select-wrapper`
-	 * — sized with `flex: 0 1 220px` — read that basis down the COLUMN axis and
-	 * rendered 220px tall and 79px too narrow, with the dropdown stranded below
-	 * a 191px hole.
-	 *
-	 * So a composite block says so, and keeps only the rhythm. `.setting-item`
-	 * is now exactly one thing: a leading label plus controls that are its own
-	 * direct children. The row-structure guards at the end of
-	 * settingsPersistence.test.ts hold it to that.
+	 * A composite row (the VS Code theme import, the delete-theme link): it
+	 * keeps `.setting-item`'s border and rhythm, not its label column.
+	 * `.setting-item` is only ever a label plus controls as direct children;
+	 * the row-structure guards in settingsPersistence.spec.ts enforce that.
 	 */
 	.setting-block {
 		display: flex;

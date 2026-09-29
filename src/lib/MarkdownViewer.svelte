@@ -190,7 +190,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		hideDragCaret: () => void;
 		runEditorAction: (actionId: string, payload?: any) => void;
 		undo: () => void;
-		redo: () => void;
 		revealHeader: (sourceLine: BufferLine | null, text: string) => void;
 		revealSourceRange: (startLine: number, endLine: number) => void;
 		triggerFind: () => void;
@@ -3854,7 +3853,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		windowTitle="Markpad"
 		showHome={false}
 		zoomLevel={settings.zoomLevel}
-		onselectFile={selectFile}
 		onnewFile={handleNewFile}
 		onopenFile={selectFile}
 		onmergeAllWindows={mergeAllWindowsHere}
@@ -3871,7 +3869,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		onsetViewMode={setViewMode}
 		onswapPanes={() => settings.toggleSplitEditorSide()}
 		{isEditing}
-		ondetach={handleDetach}
 		ontabclick={() => (showHome = false)}
 		onresetZoom={() => settings.resetZoom()}
 		isFullWidth={settings.previewFullWidth}
@@ -3895,7 +3892,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		{windowTitle}
 		{showHome}
 		zoomLevel={settings.zoomLevel}
-		onselectFile={selectFile}
 		onnewFile={handleNewFile}
 		onopenFile={selectFile}
 		onmergeAllWindows={mergeAllWindowsHere}
@@ -3913,7 +3909,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		onsetViewMode={setViewMode}
 		onswapPanes={() => settings.toggleSplitEditorSide()}
 		{isEditing}
-		ondetach={handleDetach}
 		ontabclick={() => (showHome = false)}
 		onresetZoom={() => settings.resetZoom()}
 		{isScrollSynced}
