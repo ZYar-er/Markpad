@@ -31,6 +31,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { plainAppearance } from './exportFixtures.ts';
 import { installShimDom } from './renderProtocolDom.ts';
 import { readSource } from './sourceTree.js';
 
@@ -189,6 +190,7 @@ async function runExport(
 		// The width the preview was reading at, which the export follows (#467).
 		// Irrelevant to what this file asserts; `exportContentWidth.test.ts` owns it.
 		contentWidth: DEFAULT_PREVIEW_MAX_WIDTH,
+		appearance: plainAppearance,
 	});
 
 	return {
