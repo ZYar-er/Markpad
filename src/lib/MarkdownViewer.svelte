@@ -231,9 +231,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 			// repeated Cmd/Ctrl+F expects.
 			const seed = findSeedFromSelection(window.getSelection(), markdownBody);
 			if (seed) findBar?.setQuery(seed);
-			// Focus explicitly: once the bar is open, `findOpen = true` changes
-			// nothing, so a repeated shortcut after clicking into the document
-			// used to be swallowed (#559).
+			// Focus explicitly: `findOpen = true` is a no-op once open.
 			findOpen = true;
 			findBar?.focusInput();
 		}
@@ -310,7 +308,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	// write goes through `foldHost.setFolds`, which needs an active tab.
 	const NO_FOLD_OVERRIDES = new Set<string>();
 
-	// derived from tab manager
 	let activeTab = $derived(tabManager.activeTab);
 	// Fold state belongs to the document, so it lives on the tab (see
 	// `Tab.foldOverrides`). Reading it through a derived is what makes a tab
@@ -331,7 +328,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	let hasPreviewPane = $derived(!isEditing || isSplit);
 	let frontMatterInfo = $derived(parseFrontMatter(rawContent));
 
-	// derived from tab manager
 	let currentFile = $derived(tabManager.activeTab?.path ?? '');
 	let frontMatterPanelKey = $derived(currentFile || tabManager.activeTabId || 'untitled');
 	let frontMatterCollapsedByKey = $state<Record<string, boolean>>({});
@@ -521,7 +517,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		}
 	});
 
-	// ui state
 	let tooltip = $state({ show: false, text: '', shortcut: '', html: '', isFootnote: false, x: 0, y: 0, align: 'top' as 'top' | 'right' | 'left' | 'below' });
 	let modalState = $state<{
 		show: boolean;
@@ -1976,7 +1971,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		}
 
 		if (tabManager.activeTabId) {
-			// Update raw scroll pos
 			tabManager.updateTabScroll(tabManager.activeTabId, target.scrollTop);
 
 			// Percentage fallback
@@ -2760,8 +2754,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 			mermaidTheme: currentMermaidTheme(),
 			libraries: richLibraries,
 			// The same value the live preview is wearing as `--preview-max-width`,
-			// so the exported file is read at the measure it was written at
-			// instead of the 900px the exporter used to hard-code (#467).
+			// so the exported file is read at the measure it was written at.
 			contentWidth: previewContentWidth,
 			appearance: previewAppearance,
 			frontMatterTitle: t('frontMatter.properties', settings.language),
@@ -3069,7 +3062,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 					]
 				: [];
 
-		// detect heading for copy ref
 		const heading = (e.target as HTMLElement).closest('h1, h2, h3, h4, h5, h6');
 		let copyRefItem: any[] = [];
 		if (heading) {
@@ -3759,7 +3751,6 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 						try {
 							await invoke('rename_file', { oldPath, newPath });
 							tabManager.renameTab(tabId, newPath);
-							// Update recent files if needed
 							recentFiles = updateStoredRecentFiles((current) => renameRecentFile(current, oldPath, newPath));
 						} catch (e) {
 							console.error('Failed to rename file', e);

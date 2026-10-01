@@ -8,16 +8,16 @@ import { callbackBodies, functionSource, readSource } from './sourceTree.js';
  * A running window-tag control, lifted out of TitleBar.svelte.
  *
  * A `.svelte` file cannot be imported by the Node test runner, so — following
- * homeTabRender.test.ts — the component's own function declarations, the
+ * homeTabRender.spec.ts — the component's own function declarations, the
  * handlers its markup is actually wired to, and the body of the `$effect` that
  * installs the window-level dismissal listeners are read out of the parsed
  * component and evaluated over one shared set of component variables and the
  * REAL `TabManager`. Everything a test below drives is the code that ships.
  *
- * This started inside windowTagDismiss.test.ts and moved here when a second and
- * third file needed the same running control: the scope line and the context
- * menu read the same `tabManager.windowTag` the popover writes, and a second
- * copy of the lifting would be free to drift from the first.
+ * It is shared because several test files need the same running control: the
+ * scope line and the context menu read the same `tabManager.windowTag` the
+ * popover writes, and a second copy of the lifting would be free to drift from
+ * the first.
  *
  * What it does not model: focus, layout, CSS, or Svelte's scheduling. It
  * establishes what the handlers do when they run.

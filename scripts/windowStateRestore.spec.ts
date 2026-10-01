@@ -127,10 +127,10 @@ test('startup restore reads content from disk, not from the snapshot', () => {
 	assert.match(restore, /read_file_content/);
 	// a file that cannot be read keeps its tab and its place in the snapshot —
 	// dropping it here also dropped it from the snapshot written moments later
-	// (sessionRestoreResilience.test.ts)
+	// (sessionRestoreResilience.spec.ts)
 	assert.match(restore, /tabManager\.markTabContentUnavailable\(tab\.id\);/);
 	// dropping is reserved for an entry that is not a file at all — a legacy
-	// 'HOME' sentinel (homeSentinelSnapshot.test.ts)
+	// 'HOME' sentinel (homeSentinelSnapshot.spec.ts)
 	assert.match(restore, /if \(!hasRealFilePath\(tab\.path\)\) \{\s*\n\s*options\.dropRestoredTab\(tab\.id\);/);
 	assert.match(viewer, /await windowSession\.restore\(\);/);
 });
@@ -165,9 +165,8 @@ test('v2 snapshots are invisible to legacy builds (Rust file, localStorage keys 
 	);
 	// The shared helper clears the Rust snapshot and both localStorage keys.
 	// Only turning the setting off uses it: a restore that goes wrong must never
-	// delete the record of which documents were open
-	// (interruptedSessionRestore.test.ts), and quitting writes the snapshot now
-	// rather than discarding it (#390).
+	// delete the record of which documents were open, and quitting writes the
+	// snapshot rather than discarding it.
 	const discardScope = sliceBetween(session, 'async function discardPersistedState', 'async function readProgress');
 	assert.match(discardScope, /clear_window_state/);
 	assert.match(discardScope, /removeItem\(options\.windowStateKey\)/);
