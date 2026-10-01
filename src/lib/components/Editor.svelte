@@ -141,6 +141,9 @@
 	let selectionCount = $state(0);
 	let cursorCount = $state(0);
 	let wordCount = $state(0);
+	let wordCountTimer: ReturnType<typeof setTimeout> | undefined;
+	/** The attached model's text as the content listener last read it; null after a model swap. */
+	let emittedText: string | null = null;
 	let currentLanguage = $state("markdown");
 	let lineEnding = $state<"LF" | "CRLF">("LF");
 	/**
@@ -209,13 +212,19 @@
 	 * changed: a different document arrived. So switching tabs has to ask for
 	 * these explicitly, or the status bar keeps the previous document's numbers.
 	 */
-	function syncStatusFromModel() {
+	function syncStatusFromModel(deferWordCount = false) {
 		const model = editor.getModel();
 		if (!model) return;
 		currentLanguage = model.getLanguageId();
 		lineEnding = lineEndingLabel(model);
-		const text = model.getValue();
-		wordCount = countWords(text);
+		// `countWords` is several full-text regex passes, ~400 ms on a 1 MB
+		// document: skipped while the status bar hides it, and on a keystroke
+		// left for a pause in typing.
+		clearTimeout(wordCountTimer);
+		if (!settings.wordCount) return;
+		const count = () => (wordCount = countWords(model.getValue()));
+		if (deferWordCount) wordCountTimer = setTimeout(count, 300);
+		else count();
 	}
 
 	self.MonacoEnvironment = {
@@ -534,11 +543,12 @@
 		// be a write the user did not make.
 		editor.onDidChangeModelContent(() => {
 			const newValue = editor.getValue();
+			emittedText = newValue;
 			if (value !== newValue && tabManager.activeTabId) {
 				tabManager.updateTabRawContent(tabManager.activeTabId, newValue);
 			}
 
-			syncStatusFromModel();
+			syncStatusFromModel(true);
 		});
 
 		editor.onDidChangeCursorPosition((e) => {
@@ -600,24 +610,31 @@
 	 *
 	 * Keyed on the model as well: each tab has its own, and version ids are
 	 * counted per model, so two tabs can stand at the same one.
+	 *
+	 * The block folds come with them, from the same parse: the folding provider
+	 * wants both for every version. The promise is what is cached, so the
+	 * folding and symbol providers asking at once share one call.
 	 */
-	let anchorCache: { model: Monaco.editor.ITextModel; version: number; anchors: HeadingAnchor[] } | null = null;
+	type Outline = { anchors: HeadingAnchor[]; folds: Monaco.languages.FoldingRange[] };
+	let outlineCache: { model: Monaco.editor.ITextModel; version: number; outline: Promise<Outline> } | null = null;
 
-	async function headingAnchors(model: Monaco.editor.ITextModel): Promise<HeadingAnchor[]> {
+	function documentOutline(model: Monaco.editor.ITextModel): Promise<Outline> {
 		const version = model.getVersionId();
-		if (anchorCache?.model === model && anchorCache.version === version) return anchorCache.anchors;
+		if (outlineCache?.model === model && outlineCache.version === version) return outlineCache.outline;
 
-		try {
-			const markdown = model.getValue();
-			const anchors = (await invoke("list_heading_anchors", {
+		const markdown = model.getValue();
+		const outline = (
+			invoke("markdown_outline", {
 				markdown,
 				frontMatterLines: frontMatterFenceLines(markdown),
-			})) as HeadingAnchor[];
-			anchorCache = { model, version, anchors };
-			return anchors;
-		} catch {
-			return [];
-		}
+			}) as Promise<Outline>
+		).catch(() => ({ anchors: [], folds: [] }));
+		outlineCache = { model, version, outline };
+		return outline;
+	}
+
+	async function headingAnchors(model: Monaco.editor.ITextModel): Promise<HeadingAnchor[]> {
+		return (await documentOutline(model)).anchors;
 	}
 
 	// The colours that come from the renderer rather than from the grammar's
@@ -642,17 +659,8 @@
 	// indentation folding covered: registering this turns that fallback off (#777).
 	const foldingRanges = monaco.languages.registerFoldingRangeProvider(MARKDOWN_LANGUAGE_ID, {
 		provideFoldingRanges: async (model) => {
-			const markdown = model.getValue();
-			const [anchors, blocks] = await Promise.all([
-				headingAnchors(model),
-				(
-					invoke("list_fold_ranges", {
-						markdown,
-						frontMatterLines: frontMatterFenceLines(markdown),
-					}) as Promise<Monaco.languages.FoldingRange[]>
-				).catch(() => []),
-			]);
-			return [...headingFoldRanges(anchors, model.getLineCount(), (n) => model.getLineContent(n)), ...blocks];
+			const { anchors, folds } = await documentOutline(model);
+			return [...headingFoldRanges(anchors, model.getLineCount(), (n) => model.getLineContent(n)), ...folds];
 		},
 	});
 
@@ -866,6 +874,7 @@
 
 		return () => {
 			editorReady = false;
+			clearTimeout(wordCountTimer);
 			window.open = originalOpen;
 			mediaQuery.removeEventListener("change", updateTheme);
 			container.removeEventListener("wheel", wheelListener, { capture: true });
@@ -1846,6 +1855,8 @@
 		return Math.max(0, editor.getContentHeight() - layout.height);
 	}
 
+	let frontMatterOffsetCache: { model: Monaco.editor.ITextModel; version: number; offset: number } | null = null;
+
 	function getEditorFrontMatterScrollEnd() {
 		if (!editor) return 0;
 
@@ -1854,8 +1865,13 @@
 
 		// The preview's rule, not a second one: a leading `---` block that is not
 		// a YAML mapping is body there, and the two panes must agree on where the
-		// front matter ends or every position above it syncs to the top.
-		const bodyStartLine = frontMatterLineOffset(model.getValue()) + 1;
+		// front matter ends or every position above it syncs to the top. Cached on
+		// the model's version because this runs on every scroll event.
+		const version = model.getVersionId();
+		if (frontMatterOffsetCache?.model !== model || frontMatterOffsetCache.version !== version) {
+			frontMatterOffsetCache = { model, version, offset: frontMatterLineOffset(model.getValue()) };
+		}
+		const bodyStartLine = frontMatterOffsetCache.offset + 1;
 		if (bodyStartLine <= 1) return 0;
 
 		const safeBodyStartLine = Math.max(1, Math.min(model.getLineCount(), bodyStartLine));
@@ -2283,10 +2299,15 @@
 
 		if (activeTabId) {
 			const model = acquireTabModel(activeTabId, content, languageId);
-			if (editor.getModel() !== model) editor.setModel(model);
+			if (editor.getModel() !== model) {
+				editor.setModel(model);
+				emittedText = null;
+			}
 		}
 
-		if (editor.getValue() !== content) {
+		// The keystroke that changed `value` came from this editor, and the
+		// model already holds it: no need to copy the buffer out to compare.
+		if (content !== emittedText && editor.getValue() !== content) {
 			editor.setValue(content);
 		}
 
@@ -2315,6 +2336,11 @@
 
 	$effect(() => {
 		if (editorReady && editor) applySettingsOptions();
+	});
+
+	// The count is not kept while hidden, so showing it has to take one.
+	$effect(() => {
+		if (editorReady && editor && settings.wordCount) syncStatusFromModel();
 	});
 
 	// Focus Mode (#819): the paragraph the cursor is in keeps full strength and
