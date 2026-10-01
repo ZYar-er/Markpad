@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-	import { emitTo } from '@tauri-apps/api/event';
+	import { emitTo, type EventCallback } from '@tauri-apps/api/event';
 	import { getAllWindows, getCurrentWindow } from '@tauri-apps/api/window';
 	import { onMount, tick, untrack } from 'svelte';
 	import { fade, fly, slide } from 'svelte/transition';
@@ -587,28 +587,20 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		});
 	}
 
-	function handlePromptConfirm() {
-		if (promptModal.resolve) promptModal.resolve(promptModal.value);
+	function closePrompt(value: string | null) {
+		promptModal.resolve?.(value);
 		promptModal.show = false;
 	}
 
-	function handlePromptCancel() {
-		if (promptModal.resolve) promptModal.resolve(null);
-		promptModal.show = false;
-	}
-
-	function handleModalSave() {
-		if (modalState.resolve) modalState.resolve('save');
+	function closeModal(choice: 'save' | 'cancel') {
+		modalState.resolve?.(choice);
 		modalState.show = false;
 	}
 
+	// Self-contained rather than closeModal('discard'): menuModalGuards.test.ts
+	// lifts it on its own.
 	function handleModalConfirm() {
 		if (modalState.resolve) modalState.resolve('discard');
-		modalState.show = false;
-	}
-
-	function handleModalCancel() {
-		if (modalState.resolve) modalState.resolve('cancel');
 		modalState.show = false;
 	}
 
@@ -627,25 +619,21 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		);
 	}
 
-	function setTocWidth(width: number) {
-		settings.setTocWidth(Math.min(TOC_WIDTH_RANGE.max, Math.max(TOC_WIDTH_RANGE.min, width)));
-	}
-
 	function handleTocResizeKeyDown(e: KeyboardEvent) {
 		const keyDelta = e.key === 'ArrowRight' ? TOC_RESIZE_STEP : e.key === 'ArrowLeft' ? -TOC_RESIZE_STEP : 0;
 		if (keyDelta !== 0) {
 			e.preventDefault();
 			const widthDelta = settings.tocSide === 'left' ? keyDelta : -keyDelta;
-			setTocWidth(settings.tocWidth + widthDelta);
+			settings.setTocWidth(settings.tocWidth + widthDelta);
 			return;
 		}
 
 		if (e.key === 'Home') {
 			e.preventDefault();
-			setTocWidth(TOC_WIDTH_RANGE.min);
+			settings.setTocWidth(TOC_WIDTH_RANGE.min);
 		} else if (e.key === 'End') {
 			e.preventDefault();
-			setTocWidth(TOC_WIDTH_RANGE.max);
+			settings.setTocWidth(TOC_WIDTH_RANGE.max);
 		}
 	}
 
@@ -1054,30 +1042,25 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		await appWindow.close();
 	}
 
+	const EDITOR_LANGUAGES: Record<string, string> = {
+		js: 'javascript',
+		jsx: 'javascript',
+		ts: 'typescript',
+		tsx: 'typescript',
+		html: 'html',
+		css: 'css',
+		json: 'json',
+		md: 'markdown',
+		markdown: 'markdown',
+		mdown: 'markdown',
+		mkd: 'markdown',
+	};
+
 	function getLanguage(path: string) {
 		if (!path) return 'markdown';
-		const ext = path.split('.').pop()?.toLowerCase();
-		switch (ext) {
-			case 'js':
-			case 'jsx':
-				return 'javascript';
-			case 'ts':
-			case 'tsx':
-				return 'typescript';
-			case 'html':
-				return 'html';
-			case 'css':
-				return 'css';
-			case 'json':
-				return 'json';
-			case 'md':
-			case 'markdown':
-			case 'mdown':
-			case 'mkd':
-				return 'markdown';
-			default:
-				return 'plaintext';
-		}
+		const ext = path.split('.').pop()?.toLowerCase() ?? '';
+		if (Object.hasOwn(EDITOR_LANGUAGES, ext)) return EDITOR_LANGUAGES[ext];
+		return 'plaintext';
 	}
 
 	/**
@@ -1202,18 +1185,26 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	}
 
 	function setFrontMatterCollapsed(collapsed: boolean) {
-		frontMatterCollapsedByKey = {
-			...frontMatterCollapsedByKey,
-			[frontMatterPanelKey]: collapsed,
-		};
+		frontMatterCollapsedByKey[frontMatterPanelKey] = collapsed;
 	}
 
 	function clearFrontMatterEditError(field: FrontMatterField) {
-		const key = frontMatterFieldStateKey(field);
-		if (!frontMatterEditErrors[key]) return;
-		const next = { ...frontMatterEditErrors };
-		delete next[key];
-		frontMatterEditErrors = next;
+		delete frontMatterEditErrors[frontMatterFieldStateKey(field)];
+	}
+
+	// `nextValue` runs inside the try so a parse error lands on the field.
+	async function applyFrontMatter(tab: Tab, field: FrontMatterField, nextValue: () => unknown) {
+		try {
+			const nextRaw = updateFrontMatterField(tab.rawContent, field.key, nextValue());
+			tabManager.updateTabRawContent(tab.id, nextRaw);
+			clearFrontMatterEditError(field);
+			await renderTabPreviewFromRaw(tab);
+		} catch (error) {
+			frontMatterEditErrors = {
+				...frontMatterEditErrors,
+				[frontMatterFieldStateKey(field)]: String(error),
+			};
+		}
 	}
 
 	async function handleFrontMatterEdit(field: FrontMatterField, value: string) {
@@ -1226,19 +1217,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 			addToast(t('toast.partialDocument', settings.language), 'error');
 			return;
 		}
-
-		try {
-			const nextValue = parseFrontMatterEditableValue(field, value);
-			const nextRaw = updateFrontMatterField(tab.rawContent, field.key, nextValue);
-			tabManager.updateTabRawContent(tab.id, nextRaw);
-			clearFrontMatterEditError(field);
-			await renderTabPreviewFromRaw(tab);
-		} catch (error) {
-			frontMatterEditErrors = {
-				...frontMatterEditErrors,
-				[frontMatterFieldStateKey(field)]: String(error),
-			};
-		}
+		await applyFrontMatter(tab, field, () => parseFrontMatterEditableValue(field, value));
 	}
 
 	function getFrontMatterTagDraft(field: FrontMatterField) {
@@ -1246,20 +1225,12 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	}
 
 	function setFrontMatterTagDraft(field: FrontMatterField, value: string) {
-		frontMatterTagDrafts = {
-			...frontMatterTagDrafts,
-			[frontMatterFieldStateKey(field)]: value,
-		};
+		frontMatterTagDrafts[frontMatterFieldStateKey(field)] = value;
 		clearFrontMatterEditError(field);
 	}
 
 	function clearFrontMatterTagDraft(field: FrontMatterField) {
-		const key = frontMatterFieldStateKey(field);
-		if (!frontMatterTagDrafts[key]) return;
-
-		const next = { ...frontMatterTagDrafts };
-		delete next[key];
-		frontMatterTagDrafts = next;
+		delete frontMatterTagDrafts[frontMatterFieldStateKey(field)];
 	}
 
 	function getFrontMatterTagEditIndex(field: FrontMatterField) {
@@ -1271,34 +1242,21 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	}
 
 	function setFrontMatterTagEditDraft(field: FrontMatterField, value: string) {
-		frontMatterTagEditDrafts = {
-			...frontMatterTagEditDrafts,
-			[frontMatterFieldStateKey(field)]: value,
-		};
+		frontMatterTagEditDrafts[frontMatterFieldStateKey(field)] = value;
 		clearFrontMatterEditError(field);
 	}
 
 	function startFrontMatterTagEdit(field: FrontMatterField, index: number, value: string) {
 		const key = frontMatterFieldStateKey(field);
-		frontMatterTagEditIndexes = {
-			...frontMatterTagEditIndexes,
-			[key]: index,
-		};
-		frontMatterTagEditDrafts = {
-			...frontMatterTagEditDrafts,
-			[key]: value,
-		};
+		frontMatterTagEditIndexes[key] = index;
+		frontMatterTagEditDrafts[key] = value;
 		clearFrontMatterEditError(field);
 	}
 
 	function clearFrontMatterTagEdit(field: FrontMatterField) {
 		const key = frontMatterFieldStateKey(field);
-		const nextIndexes = { ...frontMatterTagEditIndexes };
-		const nextDrafts = { ...frontMatterTagEditDrafts };
-		delete nextIndexes[key];
-		delete nextDrafts[key];
-		frontMatterTagEditIndexes = nextIndexes;
-		frontMatterTagEditDrafts = nextDrafts;
+		delete frontMatterTagEditIndexes[key];
+		delete frontMatterTagEditDrafts[key];
 	}
 
 	async function handleFrontMatterListChange(field: FrontMatterField, nextItems: string[]) {
@@ -1309,18 +1267,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 			addToast(t('toast.partialDocument', settings.language), 'error');
 			return;
 		}
-
-		try {
-			const nextRaw = updateFrontMatterField(tab.rawContent, field.key, nextItems);
-			tabManager.updateTabRawContent(tab.id, nextRaw);
-			clearFrontMatterEditError(field);
-			await renderTabPreviewFromRaw(tab);
-		} catch (error) {
-			frontMatterEditErrors = {
-				...frontMatterEditErrors,
-				[frontMatterFieldStateKey(field)]: String(error),
-			};
-		}
+		await applyFrontMatter(tab, field, () => nextItems);
 	}
 
 	async function commitFrontMatterTagAdd(field: FrontMatterField) {
@@ -1962,17 +1909,14 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 			isScrolling = false;
 		}, 300);
 
+		if (tabManager.activeTabId) tabManager.updateTabScroll(tabManager.activeTabId, target.scrollTop);
+
 		if (isProgrammaticScroll) {
 			isProgrammaticScroll = false;
-			if (tabManager.activeTabId) {
-				tabManager.updateTabScroll(tabManager.activeTabId, target.scrollTop);
-			}
 			return;
 		}
 
 		if (tabManager.activeTabId) {
-			tabManager.updateTabScroll(tabManager.activeTabId, target.scrollTop);
-
 			// Percentage fallback
 			if (target.scrollHeight > target.clientHeight) {
 				const percentage = target.scrollTop / (target.scrollHeight - target.clientHeight);
@@ -2533,15 +2477,11 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 	);
 
 	function noteExternalChangeConflict(tabId: string) {
-		if (externalChangeConflicts[tabId]) return;
-		externalChangeConflicts = { ...externalChangeConflicts, [tabId]: true };
+		externalChangeConflicts[tabId] = true;
 	}
 
 	function clearExternalChangeConflict(tabId: string) {
-		if (!externalChangeConflicts[tabId]) return;
-		const next = { ...externalChangeConflicts };
-		delete next[tabId];
-		externalChangeConflicts = next;
+		delete externalChangeConflicts[tabId];
 	}
 
 	/** "Reload": the user chose the disk version over their own edits. */
@@ -3638,7 +3578,7 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		const onMove = (moveEvent: PointerEvent) => {
 			const deltaX = moveEvent.clientX - startX;
 			const widthDelta = side === 'left' ? deltaX : -deltaX;
-			setTocWidth(startWidth + widthDelta);
+			settings.setTocWidth(startWidth + widthDelta);
 		};
 
 		const onUp = (upEvent: PointerEvent) => {
@@ -3724,19 +3664,15 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 				}),
 			);
 
-			unlisteners.push(
-				await appWindow.listen('file-path', (event) => {
+			const listeners: [string, EventCallback<any>][] = [
+				['file-path', (event) => {
 					const filePath = event.payload as string;
 					if (filePath) loadMarkdown(filePath);
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen('menu-close-file', () => {
+				}],
+				['menu-close-file', () => {
 					closeFile();
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen('menu-tab-rename', async (event) => {
+				}],
+				['menu-tab-rename', async (event) => {
 					const tabId = event.payload as string;
 					const tab = tabManager.tabs.find((t) => t.id === tabId);
 					if (!tab || !tab.path) return;
@@ -3757,70 +3693,51 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 							await askCustom(`Failed to rename file: ${e}`, { title: 'Error', kind: 'error' });
 						}
 					}
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen('menu-tab-new', () => {
+				}],
+				['menu-tab-new', () => {
 					tabManager.addNewTab();
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen('menu-tab-undo', () => {
+				}],
+				['menu-tab-undo', () => {
 					handleUndoCloseTab();
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen('menu-tab-close', async (event) => {
+				}],
+				['menu-tab-close', async (event) => {
 					const tabId = event.payload as string;
 					await closeTabAndWindowIfLast(tabId);
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen('menu-tab-detach', (event) => {
+				}],
+				['menu-tab-detach', (event) => {
 					handleDetach(event.payload as string);
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen('menu-tab-move', (event) => {
+				}],
+				['menu-tab-move', (event) => {
 					const { tabId, targetLabel } = event.payload as { tabId: string; targetLabel: string };
 					moveTabToWindow(tabId, targetLabel).catch((error) => console.error('Failed to move tab', error));
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen<string>('tab-transfer-offer', (event) => {
+				}],
+				['tab-transfer-offer', (event) => {
 					if (isCloseWalkActive) return;
 					windowSession.acceptOfferedTransfer(event.payload);
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen<string>('merge-into', (event) => {
+				}],
+				['merge-into', (event) => {
 					mergeSelfInto(event.payload).catch((error) => console.error('Failed to merge window', error));
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen<string>('window-identify', (event) => {
+				}],
+				['window-identify', (event) => {
 					identifyFlash = event.payload;
 					clearTimeout(identifyFlashTimer);
 					identifyFlashTimer = setTimeout(() => (identifyFlash = ''), 700);
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen('menu-tab-close-others', async (event) => {
+				}],
+				['menu-tab-close-others', async (event) => {
 					const tabId = event.payload as string;
 					const tabsToClose = tabManager.tabs.filter((t) => t.id !== tabId).map((t) => t.id);
 					await closeTabsWithConfirmation(tabsToClose);
-				}),
-			);
-			unlisteners.push(
-				await appWindow.listen('menu-tab-close-right', async (event) => {
+				}],
+				['menu-tab-close-right', async (event) => {
 					const tabId = event.payload as string;
 					const index = tabManager.tabs.findIndex((t) => t.id === tabId);
 					if (index !== -1) {
 						const tabsToClose = tabManager.tabs.slice(index + 1).map((t) => t.id);
 						await closeTabsWithConfirmation(tabsToClose);
 					}
-				}),
-			);
+				}],
+			];
+			for (const [event, handler] of listeners) unlisteners.push(await appWindow.listen(event, handler));
 			unlisteners.push(
 				await appWindow.listen('menu-app-settings', () => {
 					showSettings = true;
@@ -3864,22 +3781,16 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 						// Only `enter` carries the paths; `over` repeats the position.
 						if (event.payload.type === 'enter') dragPaths = event.payload.paths;
 						
+						const contains = (el: HTMLElement) => {
+							const rect = el.getBoundingClientRect();
+							return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+						};
 						if (editorPaneEl) {
-							const rect = editorPaneEl.getBoundingClientRect();
-							if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+							if (contains(editorPaneEl)) {
 								dragTarget = 'editor';
 								if (editorPane) editorPane.updateDragCaret(x, y);
-							} else if (viewerPaneEl) {
-								const vRect = viewerPaneEl.getBoundingClientRect();
-								if (x >= vRect.left && x <= vRect.right && y >= vRect.top && y <= vRect.bottom) {
-									dragTarget = 'preview';
-									if (editorPane) editorPane.hideDragCaret();
-								} else {
-									dragTarget = null;
-									if (editorPane) editorPane.hideDragCaret();
-								}
 							} else {
-								dragTarget = null;
+								dragTarget = viewerPaneEl && contains(viewerPaneEl) ? 'preview' : null;
 								if (editorPane) editorPane.hideDragCaret();
 							}
 						}
@@ -4463,8 +4374,8 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		kind={modalState.kind}
 		showSave={modalState.showSave}
 		onconfirm={handleModalConfirm}
-		onsave={handleModalSave}
-		oncancel={handleModalCancel} />
+		onsave={() => closeModal('save')}
+		oncancel={() => closeModal('cancel')} />
 
 	<Modal
 		show={promptModal.show}
@@ -4473,8 +4384,8 @@ import { createDocumentSession, type LoadMarkdownOptions } from './sessions/docu
 		kind="info"
 		showInput={true}
 		bind:inputValue={promptModal.value}
-		onconfirm={handlePromptConfirm}
-		oncancel={handlePromptCancel} />
+		onconfirm={() => closePrompt(promptModal.value)}
+		oncancel={() => closePrompt(null)} />
 
 	{#if identifyFlash}
 		<div class="identify-flash" transition:fade={{ duration: 150 }}>
