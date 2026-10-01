@@ -273,8 +273,12 @@ const LEGACY_PREVIEW_FULL_WIDTH_KEY = 'isFullWidth';
 const LEGACY_AUTO_SAVE_KEY = 'editor.autoSave';
 const LEGACY_CONFIRM_BEFORE_SAVE_KEY = 'editor.confirmBeforeSave';
 
+function hasStorage(): boolean {
+	return typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function';
+}
+
 function readStoredKey(key: string): string | null {
-	if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') return null;
+	if (!hasStorage()) return null;
 	return localStorage.getItem(key);
 }
 
@@ -386,7 +390,7 @@ export interface PersistedSetting<T> {
  * hop. It also makes redundant writes free in the ordinary single-window case.
  */
 export function writeStoredSetting(key: string, value: string | null): boolean {
-	if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') return false;
+	if (!hasStorage()) return false;
 	const current = localStorage.getItem(key);
 	if (value === null) {
 		if (current === null) return false;
@@ -400,7 +404,7 @@ export function writeStoredSetting(key: string, value: string | null): boolean {
 
 /** Applies everything currently in localStorage onto `target`. */
 function loadPersistedSettings<T>(target: T, entries: readonly PersistedSetting<T>[]): void {
-	if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') return;
+	if (!hasStorage()) return;
 	for (const entry of entries) {
 		entry.load(target, localStorage.getItem(entry.key));
 	}
@@ -431,7 +435,7 @@ function installPersistedSettings<T>(target: T, entries: readonly PersistedSetti
 		if (typeof window === 'undefined') return;
 		const entriesByKey = new Map(entries.map((entry) => [entry.key, entry]));
 		const onStorage = (event: StorageEvent) => {
-			if (event.storageArea && typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function' && event.storageArea !== localStorage) return;
+			if (event.storageArea && hasStorage() && event.storageArea !== localStorage) return;
 			// A null key means the whole store was cleared; re-read everything.
 			if (event.key === null) {
 				loadPersistedSettings(target, entries);
@@ -583,7 +587,7 @@ export class SettingsStore {
 	#disposeEffects: (() => void) | null = null;
 
 	constructor() {
-		if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') return;
+		if (!hasStorage()) return;
 
 		const entries = createSettingsPersistence();
 
@@ -634,10 +638,6 @@ export class SettingsStore {
 		this.#disposeEffects = null;
 	}
 
-	toggleMinimap() {
-		this.minimap = !this.minimap;
-	}
-
 	toggleWordWrap() {
 		if (this.wordWrap === 'off') {
 			this.wordWrap = 'on';
@@ -652,64 +652,8 @@ export class SettingsStore {
 		this.lineNumbers = this.lineNumbers === 'on' ? 'off' : 'on';
 	}
 
-	toggleVimMode() {
-		this.vimMode = !this.vimMode;
-	}
-
-	toggleStatusBar() {
-		this.statusBar = !this.statusBar;
-	}
-
-	toggleWordCount() {
-		this.wordCount = !this.wordCount;
-	}
-
 	toggleLineHighlight() {
 		this.renderLineHighlight = this.renderLineHighlight === 'line' ? 'none' : 'line';
-	}
-
-	toggleTabs() {
-		this.showTabs = !this.showTabs;
-	}
-
-	toggleRestoreStateOnReopen() {
-		this.restoreStateOnReopen = !this.restoreStateOnReopen;
-	}
-
-	toggleCloseWindowWithLastTab() {
-		this.closeWindowWithLastTab = !this.closeWindowWithLastTab;
-	}
-
-	toggleShowRecentFiles() {
-		this.showRecentFiles = !this.showRecentFiles;
-	}
-
-	toggleShowFolderForDuplicateNames() {
-		this.showFolderForDuplicateNames = !this.showFolderForDuplicateNames;
-	}
-
-	toggleAnimateJumpScroll() {
-		this.animateJumpScroll = !this.animateJumpScroll;
-	}
-
-	togglePreviewCursor() {
-		this.previewCursor = !this.previewCursor;
-	}
-
-	toggleAnimateCursor() {
-		this.animateCursor = !this.animateCursor;
-	}
-
-	toggleLinksOpenInNewTab() {
-		this.linksOpenInNewTab = !this.linksOpenInNewTab;
-	}
-
-	toggleTypewriterMode() {
-		this.typewriterMode = !this.typewriterMode;
-	}
-
-	toggleFocusMode() {
-		this.focusMode = !this.focusMode;
 	}
 
 	toggleZenMode() {
@@ -746,38 +690,6 @@ export class SettingsStore {
 		}
 	}
 
-	toggleToc() {
-		this.showToc = !this.showToc;
-	}
-
-	toggleOccurrencesHighlight() {
-		this.occurrencesHighlight = !this.occurrencesHighlight;
-	}
-
-	togglePreviewOccurrences() {
-		this.previewOccurrences = !this.previewOccurrences;
-	}
-
-	togglePreviewAnnotations() {
-		this.previewAnnotations = !this.previewAnnotations;
-	}
-
-	toggleShowWhitespace() {
-		this.showWhitespace = !this.showWhitespace;
-	}
-
-	toggleStickyScroll() {
-		this.stickyScroll = !this.stickyScroll;
-	}
-
-	toggleNewFileDefaultMode() {
-		this.newFileDefaultMode = !this.newFileDefaultMode;
-	}
-
-	togglePinnedToc() {
-		this.pinnedToc = !this.pinnedToc;
-	}
-
 	toggleTocSide() {
 		this.tocSide = this.tocSide === 'left' ? 'right' : 'left';
 	}
@@ -790,20 +702,8 @@ export class SettingsStore {
 		this.tocWidth = clampToRange(width, TOC_WIDTH_RANGE);
 	}
 
-	toggleMacosImageScaling() {
-		this.macosImageScaling = !this.macosImageScaling;
-	}
-
-	toggleAutoSave() {
-		this.autoSave = !this.autoSave;
-	}
-
 	setLanguage(lang: LanguageCode) {
 		this.language = lang;
-	}
-
-	toggleEditorToolbar() {
-		this.showEditorToolbar = !this.showEditorToolbar;
 	}
 
 	setEditorToolbarToolVisible(id: string, visible: boolean) {
@@ -872,10 +772,6 @@ export class SettingsStore {
 
 	resetPreviewMaxWidth() {
 		this.previewMaxWidth = DEFAULT_PREVIEW_MAX_WIDTH;
-	}
-
-	togglePreviewFullWidth() {
-		this.previewFullWidth = !this.previewFullWidth;
 	}
 
 	// The three zoom operations live here rather than at the four keyboard and
