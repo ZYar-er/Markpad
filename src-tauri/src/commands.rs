@@ -19,7 +19,7 @@ const VSIX_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const VSIX_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Runs `f` on the blocking pool. A panicked task reports its `JoinError` text.
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(f)
@@ -67,19 +67,18 @@ fn validate_vsix_archive_limits<R: std::io::Read + std::io::Seek>(
     Ok(())
 }
 
-/// Returns `(html, content, is_full, lossy, encoding)`. See `DecodedText`: the
+/// Returns `(content, is_full, lossy, encoding)`. See `DecodedText`: the
 /// frontend refuses to write a `lossy` buffer back over its file, and saves a
 /// faithful one as the `encoding` it came in.
 #[tauri::command]
 pub async fn open_markdown_preview(
     path: String,
     max_bytes: usize,
-) -> Result<(String, String, bool, bool, String), String> {
+) -> Result<(String, bool, bool, String), String> {
     blocking(move || {
         crate::asset_protocol::trust_document_host(&path);
         let preview = build_markdown_preview(Path::new(&path), max_bytes)?;
         Ok((
-            preview.html,
             preview.content,
             preview.is_full,
             preview.lossy,
@@ -837,8 +836,14 @@ pub fn clipboard_read_file_list() -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// Async so the resize and PNG encode of a screenshot-sized image run on the
+/// blocking pool: a sync command runs on the main thread and freezes the window.
 #[tauri::command]
-pub fn clipboard_read_image(macos_image_scaling: bool) -> Result<String, String> {
+pub async fn clipboard_read_image(macos_image_scaling: bool) -> Result<String, String> {
+    blocking(move || clipboard_read_image_blocking(macos_image_scaling)).await
+}
+
+fn clipboard_read_image_blocking(macos_image_scaling: bool) -> Result<String, String> {
     #[cfg(not(target_os = "macos"))]
     let _ = macos_image_scaling;
 
