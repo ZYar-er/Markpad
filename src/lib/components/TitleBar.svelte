@@ -123,7 +123,6 @@
 	// itself on a machine where the two do differ.
 	let platform = $derived(platformOf(settings.osType));
 	let isMac = $derived(platform === 'macos');
-	let useNativeMacChrome = $derived(isMac);
 	let modifier = $derived(modifierFor(platform));
 
 	let isWin11 = $state(false);
@@ -437,25 +436,11 @@
 
 <svelte:window bind:innerWidth />
 
-<div class="custom-title-bar {isScrolled ? 'scrolled' : ''} {!isMac ? 'windows' : ''} {useNativeMacChrome ? 'native-mac' : ''}" class:maximized={isMaximized}>
+<div class="custom-title-bar {isScrolled ? 'scrolled' : ''} {!isMac ? 'windows' : ''} {isMac ? 'native-mac' : ''}" class:maximized={isMaximized}>
 	{#if !isMac && !isWin11}
 		<div class="window-top-border"></div>
 	{/if}
 	<div class="window-controls-left" data-tauri-drag-region>
-		{#if isMac && !useNativeMacChrome}
-			<div class="macos-traffic-lights" class:visible={isMac}>
-				<button class="mac-btn mac-close" onclick={() => appWindow.close()} aria-label={t('common.close', currentLanguage)}>
-						<svg width="6" height="6" viewBox="0 0 6 6" class="mac-icon"
-								><path d="M0.5 0.5L5.5 5.5M5.5 0.5L0.5 5.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" /></svg>
-					</button>
-					<button class="mac-btn mac-minimize" onclick={() => appWindow.minimize()} aria-label={t('common.minimize', currentLanguage)}>
-						<svg width="6" height="6" viewBox="0 0 6 6" class="mac-icon"><path d="M0.5 3H5.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" /></svg>
-					</button>
-					<button class="mac-btn mac-maximize" onclick={() => appWindow.toggleMaximize()} aria-label={t('common.maximize', currentLanguage)}>
-						<svg width="6" height="6" viewBox="0 0 6 6" class="mac-icon"><path d="M0.5 3H5.5M3 0.5V5.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" /></svg>
-					</button>
-			</div>
-		{/if}
 		<div class="home-menu-container" role="presentation">
 			<button
 				class="icon-home-btn {homeMenuOpen ? 'active' : ''}"
@@ -1131,8 +1116,8 @@
 			{/each}
 		{/snippet}
 
-		{#if isCollapsed}
-			{#if configuredActionIds.visibleIds.length > 0}
+		{#snippet actionMenu(ids: string[])}
+			{#if ids.length > 0}
 				{@render kebabButton()}
 				{#if kebabMenuOpen}
 					<div
@@ -1145,32 +1130,20 @@
 						onkeydown={(e) => {
 							if (e.key === 'Escape') kebabMenuOpen = false;
 						}}>
-						{@render actionItems(configuredActionIds.visibleIds)}
+						{@render actionItems(ids)}
 					</div>
 				{/if}
 			{/if}
+		{/snippet}
+
+		{#if isCollapsed}
+			{@render actionMenu(configuredActionIds.visibleIds)}
 		{:else}
 			<div class="title-actions inline" data-tauri-drag-region>
 				{@render actionItems(configuredActionIds.barIds)}
 			</div>
 
-			{#if configuredActionIds.menuIds.length > 0}
-				{@render kebabButton()}
-				{#if kebabMenuOpen}
-					<div
-						class="title-actions show-dropdown"
-						data-tauri-drag-region
-						role="menu"
-						tabindex="-1"
-						transition:fly={{ y: 5, duration: 150 }}
-						onclick={(e) => e.stopPropagation()}
-						onkeydown={(e) => {
-							if (e.key === 'Escape') kebabMenuOpen = false;
-						}}>
-						{@render actionItems(configuredActionIds.menuIds)}
-					</div>
-				{/if}
-			{/if}
+			{@render actionMenu(configuredActionIds.menuIds)}
 		{/if}
 	</div>
 
@@ -1592,67 +1565,6 @@
 
 	.close-btn:hover {
 		background: #e81123 !important;
-	}
-
-
-	.macos-traffic-lights {
-		display: flex;
-		gap: 8px;
-		margin-right: 12px;
-		align-items: center;
-		padding-left: 2px;
-	}
-
-	.mac-btn {
-		width: 12px;
-		height: 12px;
-		border-radius: 50%;
-		border: 1px solid rgba(0, 0, 0, 0.1);
-		display: flex;
-		justify-content: center;
-		align-items: center;
-		padding: 0;
-		cursor: default;
-		outline: none;
-		position: relative;
-		overflow: hidden;
-	}
-
-	.mac-close {
-		background-color: #ff5f57;
-		border-color: #e0443e;
-	}
-
-	.mac-minimize {
-		background-color: #febc2e;
-		border-color: #d3a125;
-	}
-
-	.mac-maximize {
-		background-color: #28c840;
-		border-color: #1ca431;
-	}
-
-	.mac-icon {
-		opacity: 0;
-		color: #4d0000;
-		transition: opacity 0.1s;
-	}
-
-	.mac-minimize .mac-icon {
-		color: #995700;
-	}
-
-	.mac-maximize .mac-icon {
-		color: #006500;
-	}
-
-	.macos-traffic-lights:hover .mac-icon {
-		opacity: 0.6;
-	}
-
-	.mac-btn:active {
-		filter: brightness(0.9);
 	}
 
 	.custom-tooltip {
