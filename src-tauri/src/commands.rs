@@ -21,6 +21,15 @@ const MAX_THEME_JSON_BYTES: u64 = 2 * 1024 * 1024;
 const VSIX_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const VSIX_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Runs `f` on the blocking pool. A panicked task reports its `JoinError` text.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()))
+}
+
 /// Reads a VSIX entry as text under a hard byte ceiling.
 ///
 /// The `size()` checks elsewhere use the size the archive *declares* in its
@@ -69,7 +78,7 @@ pub async fn open_markdown_preview(
     path: String,
     max_bytes: usize,
 ) -> Result<(String, String, bool, bool, String), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         crate::asset_protocol::trust_document_host(&path);
         let preview = build_markdown_preview(Path::new(&path), max_bytes)?;
         Ok((
@@ -81,7 +90,6 @@ pub async fn open_markdown_preview(
         ))
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()))
 }
 
 /// `front_matter_lines` is how many leading lines are front matter, which the
@@ -91,9 +99,7 @@ pub async fn list_heading_anchors(
     markdown: String,
     front_matter_lines: usize,
 ) -> Result<Vec<HeadingAnchor>, String> {
-    tauri::async_runtime::spawn_blocking(move || Ok(heading_anchors(&markdown, front_matter_lines)))
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()))
+    blocking(move || Ok(heading_anchors(&markdown, front_matter_lines))).await
 }
 
 /// Off the main thread like `markdown_semantic_spans`: Monaco asks on every edit.
@@ -102,11 +108,7 @@ pub async fn list_fold_ranges(
     markdown: String,
     front_matter_lines: usize,
 ) -> Result<Vec<FoldRange>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        Ok(block_fold_ranges(&markdown, front_matter_lines))
-    })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()))
+    blocking(move || Ok(block_fold_ranges(&markdown, front_matter_lines))).await
 }
 
 /// The ranges the editor should colour, from the same parse the preview uses.
@@ -119,21 +121,18 @@ pub async fn markdown_semantic_spans(
     content: String,
     front_matter_lines: usize,
 ) -> Result<Vec<crate::semantic::SemanticSpan>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         Ok(crate::semantic::semantic_spans(
             &content,
             front_matter_lines,
         ))
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()))
 }
 
 #[tauri::command]
 pub async fn render_markdown(content: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || Ok(convert_markdown(&content)))
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()))
+    blocking(move || Ok(convert_markdown(&content))).await
 }
 
 /// Reads a file, with the fidelity of the decode and the encoding it was
@@ -146,14 +145,13 @@ pub async fn render_markdown(content: String) -> Result<String, String> {
 /// pool, not on the main thread that every window shares.
 #[tauri::command]
 pub async fn read_file_content_checked(path: String) -> Result<(String, bool, String), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         crate::asset_protocol::trust_document_host(&path);
         read_to_string_lossy(&path)
             .map(|decoded| (decoded.content, decoded.lossy, decoded.encoding))
             .map_err(|e| e.to_string())
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()))
 }
 
 fn mime_type_for_export_path(path: &Path) -> Option<&'static str> {
@@ -191,7 +189,7 @@ fn file_bytes_to_data_url(mime_type: &str, bytes: &[u8]) -> String {
 
 #[tauri::command]
 pub async fn read_file_as_data_url(path: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         // Only image types: the HTML export is the only caller, and inlining
         // whatever an `<img src>` names would embed `![](../../.ssh/id_rsa)`
         // in a file meant to be shared.
@@ -201,7 +199,6 @@ pub async fn read_file_as_data_url(path: String) -> Result<String, String> {
         Ok(file_bytes_to_data_url(mime_type, &bytes))
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()))
 }
 
 /// Writes `content` to `path` as `encoding` — the label the file was decoded
@@ -225,12 +222,11 @@ pub async fn save_file_content(
     content: String,
     encoding: String,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let bytes = encode_text(&content, &encoding)?;
         atomic_write(Path::new(&path), &bytes).map_err(|e| e.to_string())
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()))
 }
 
 /// Resolve `path` to the identity the filesystem gives it — see
@@ -246,13 +242,12 @@ pub async fn save_file_content(
 /// a network volume that is slow or unreachable.
 #[tauri::command]
 pub async fn canonicalize_path(path: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         canonical_identity(Path::new(&path))
             .map(|resolved| resolved.to_string_lossy().into_owned())
             .map_err(|e| e.to_string())
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()))
 }
 
 #[tauri::command]
@@ -347,9 +342,7 @@ pub async fn export_pdf_windows(window: tauri::WebviewWindow, path: String) -> R
 /// every window until it returns.
 #[tauri::command]
 pub async fn open_file_folder(path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || opener::reveal(path).map_err(|e| e.to_string()))
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()))
+    blocking(move || opener::reveal(path).map_err(|e| e.to_string())).await
 }
 
 /// Extensions whose default handler runs the file instead of showing it,
@@ -441,11 +434,7 @@ pub async fn is_launchable_path(path: String) -> bool {
 /// operation that looks instant on a local disk.
 #[tauri::command]
 pub async fn rename_file(old_path: String, new_path: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        rename_file_blocking(Path::new(&old_path), Path::new(&new_path))
-    })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()))
+    blocking(move || rename_file_blocking(Path::new(&old_path), Path::new(&new_path))).await
 }
 
 /// `fs::rename` replaces an existing target without asking, so a new name
@@ -483,12 +472,11 @@ pub async fn watch_file(
     path: String,
 ) -> Result<(), String> {
     let state_handle = handle.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let state = state_handle.state::<WatcherState>();
         window_runtime::watch_file(window, handle, state, path)
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()))
 }
 
 /// Records what colour the NEXT window should be painted before it has a webview.
@@ -502,10 +490,13 @@ pub async fn watch_file(
 /// `app.rs` is the only reader — see the background colour it picks at startup.
 #[tauri::command]
 pub fn save_theme(app: AppHandle, theme: String) -> Result<(), String> {
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
-    let theme_path = config_dir.join("theme.txt");
+    let theme_path = window_runtime::config_file(&app, "theme.txt")?;
     atomic_write(&theme_path, theme.as_bytes()).map_err(|e| e.to_string())
+}
+
+fn themes_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    Ok(config_dir.join("themes"))
 }
 
 fn theme_slug(value: &str) -> String {
@@ -633,8 +624,7 @@ pub async fn fetch_vscode_theme(app: AppHandle, url: String) -> Result<String, S
         }
         let theme_json = read_zip_entry_to_string(theme_file, MAX_THEME_JSON_BYTES)?;
 
-        let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-        let themes_dir = config_dir.join("themes");
+        let themes_dir = themes_dir(&app)?;
         fs::create_dir_all(&themes_dir).map_err(|e| e.to_string())?;
 
         let dest_name = if matched_name_str.is_empty() {
@@ -654,8 +644,7 @@ pub async fn fetch_vscode_theme(app: AppHandle, url: String) -> Result<String, S
 
 #[tauri::command]
 pub fn get_saved_vscode_themes(app: AppHandle) -> Result<Vec<String>, String> {
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let themes_dir = config_dir.join("themes");
+    let themes_dir = themes_dir(&app)?;
     let mut themes = Vec::new();
     if let Ok(entries) = fs::read_dir(themes_dir) {
         for entry in entries.flatten() {
@@ -673,9 +662,9 @@ pub fn get_saved_vscode_themes(app: AppHandle) -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub fn read_vscode_theme(app: AppHandle, name: String) -> Result<String, String> {
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let themes_dir = themes_dir(&app)?;
     let name = safe_path_component(&name, "theme name")?;
-    let theme_file_path = config_dir.join("themes").join(format!("{}.json", name));
+    let theme_file_path = themes_dir.join(format!("{}.json", name));
     fs::read_to_string(theme_file_path).map_err(|e| e.to_string())
 }
 
@@ -685,8 +674,7 @@ pub fn read_vscode_theme(app: AppHandle, name: String) -> Result<String, String>
 /// is held to the same size limit as a downloaded theme.
 #[tauri::command]
 pub fn install_vscode_theme(app: AppHandle, name: String, json: String) -> Result<(), String> {
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    write_vscode_theme(&config_dir.join("themes"), &name, &json)
+    write_vscode_theme(&themes_dir(&app)?, &name, &json)
 }
 
 fn write_vscode_theme(themes_dir: &Path, name: &str, json: &str) -> Result<(), String> {
@@ -702,9 +690,9 @@ fn write_vscode_theme(themes_dir: &Path, name: &str, json: &str) -> Result<(), S
 
 #[tauri::command]
 pub fn delete_vscode_theme(app: AppHandle, name: String) -> Result<(), String> {
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let themes_dir = themes_dir(&app)?;
     let name = safe_path_component(&name, "theme name")?;
-    let theme_file_path = config_dir.join("themes").join(format!("{}.json", name));
+    let theme_file_path = themes_dir.join(format!("{}.json", name));
     fs::remove_file(theme_file_path).map_err(|e| e.to_string())
 }
 
@@ -787,22 +775,11 @@ pub fn self_update_supported(app: AppHandle) -> bool {
 
 #[tauri::command]
 pub fn get_os_type() -> String {
-    #[cfg(target_os = "macos")]
-    {
-        "macos".to_string()
+    match std::env::consts::OS {
+        os @ ("macos" | "windows" | "linux") => os,
+        _ => "unknown",
     }
-    #[cfg(target_os = "windows")]
-    {
-        "windows".to_string()
-    }
-    #[cfg(target_os = "linux")]
-    {
-        "linux".to_string()
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    {
-        "unknown".to_string()
-    }
+    .to_string()
 }
 
 /// Keep one `arboard::Clipboard` alive for the rest of the process, so that
@@ -879,72 +856,37 @@ pub fn clipboard_read_image(macos_image_scaling: bool) -> Result<String, String>
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     let image = clipboard.get_image().map_err(|e| e.to_string())?;
 
+    let (bytes, width, height) = (image.bytes, image.width as u32, image.height as u32);
+
+    #[cfg(target_os = "macos")]
+    let (bytes, width, height) = if macos_image_scaling {
+        use image::{DynamicImage, RgbaImage};
+        // Whole pixels only, zero-padded to the declared size: a short buffer
+        // leaves the missing pixels transparent rather than failing.
+        let mut raw = bytes[..bytes.len() / 4 * 4].to_vec();
+        raw.resize(width as usize * height as usize * 4, 0);
+        let buffer = RgbaImage::from_raw(width, height, raw)
+            .ok_or_else(|| "Clipboard image is too large".to_string())?;
+        let (width, height) = (width / 2, height / 2);
+        let resized = DynamicImage::ImageRgba8(buffer).resize(
+            width,
+            height,
+            image::imageops::FilterType::Lanczos3,
+        );
+        (
+            std::borrow::Cow::Owned(resized.to_rgba8().into_raw()),
+            width,
+            height,
+        )
+    } else {
+        (bytes, width, height)
+    };
+
+    use image::ImageEncoder;
     let mut png_data = Vec::new();
-    {
-        let encoder = image::codecs::png::PngEncoder::new(&mut png_data);
-        use image::ImageEncoder;
-
-        #[cfg(target_os = "macos")]
-        {
-            if macos_image_scaling {
-                use image::{DynamicImage, ImageBuffer, Rgba};
-
-                let mut img_buffer = ImageBuffer::new(image.width as u32, image.height as u32);
-                for (x, y, pixel) in img_buffer.enumerate_pixels_mut() {
-                    let idx = (y * image.width as u32 + x) as usize * 4;
-                    if idx + 3 < image.bytes.len() {
-                        *pixel = Rgba([
-                            image.bytes[idx],
-                            image.bytes[idx + 1],
-                            image.bytes[idx + 2],
-                            image.bytes[idx + 3],
-                        ]);
-                    }
-                }
-
-                let dynamic_image = DynamicImage::ImageRgba8(img_buffer);
-
-                let resized = dynamic_image.resize(
-                    (image.width / 2) as u32,
-                    (image.height / 2) as u32,
-                    image::imageops::FilterType::Lanczos3,
-                );
-
-                let resized_rgba = resized.to_rgba8();
-                encoder
-                    .write_image(
-                        resized_rgba.as_raw(),
-                        (image.width / 2) as u32,
-                        (image.height / 2) as u32,
-                        image::ExtendedColorType::Rgba8,
-                    )
-                    .map_err(|e| e.to_string())?;
-            } else {
-                // Use original image if scaling is disabled
-                encoder
-                    .write_image(
-                        image.bytes.as_ref(),
-                        image.width as u32,
-                        image.height as u32,
-                        image::ExtendedColorType::Rgba8,
-                    )
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            // For other platforms, use the original image
-            encoder
-                .write_image(
-                    image.bytes.as_ref(),
-                    image.width as u32,
-                    image.height as u32,
-                    image::ExtendedColorType::Rgba8,
-                )
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    image::codecs::png::PngEncoder::new(&mut png_data)
+        .write_image(&bytes, width, height, image::ExtendedColorType::Rgba8)
+        .map_err(|e| e.to_string())?;
 
     use base64::{engine::general_purpose, Engine as _};
     Ok(general_purpose::STANDARD.encode(&png_data))
@@ -957,11 +899,8 @@ pub async fn save_image(
     base64_data: String,
     image_directory: String,
 ) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        save_image_blocking(&parent_dir, &filename, &base64_data, &image_directory)
-    })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()))
+    blocking(move || save_image_blocking(&parent_dir, &filename, &base64_data, &image_directory))
+        .await
 }
 
 fn save_image_blocking(
@@ -989,13 +928,16 @@ fn save_image_blocking(
 
     atomic_write(&file_path, &bytes).map_err(|e| e.to_string())?;
 
-    let rel_path = if image_directory.is_empty() {
-        filename.to_string()
-    } else {
-        format!("{}/{}", image_directory, filename)
-    };
+    Ok(image_rel_path(image_directory, filename))
+}
 
-    Ok(rel_path)
+/// The link text for `name` in `image_directory`, relative to the document.
+fn image_rel_path(image_directory: &str, name: &str) -> String {
+    if image_directory.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{}", image_directory, name)
+    }
 }
 
 #[tauri::command]
@@ -1004,11 +946,7 @@ pub async fn copy_file_to_img(
     parent_dir: String,
     image_directory: String,
 ) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        copy_file_to_img_blocking(&src_path, &parent_dir, &image_directory)
-    })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()))
+    blocking(move || copy_file_to_img_blocking(&src_path, &parent_dir, &image_directory)).await
 }
 
 /// How many conflict names to try before giving up. Chromium's download path
@@ -1089,13 +1027,7 @@ fn copy_file_to_img_blocking(
         }
     }
 
-    let rel_path = if image_directory.is_empty() {
-        dest_name
-    } else {
-        format!("{}/{}", image_directory, dest_name)
-    };
-
-    Ok(rel_path)
+    Ok(image_rel_path(image_directory, &dest_name))
 }
 
 /// Async because `fs::copy` streams the whole file. On a network or removable
@@ -1104,11 +1036,7 @@ fn copy_file_to_img_blocking(
 /// `copy_file_to_img` already runs on the blocking pool.
 #[tauri::command]
 pub async fn copy_file(src: String, dest: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        copy_file_blocking(Path::new(&src), Path::new(&dest))
-    })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()))
+    blocking(move || copy_file_blocking(Path::new(&src), Path::new(&dest))).await
 }
 
 /// `fs::copy` truncates `dest` before reading `src`, so copying a file onto
@@ -1122,7 +1050,7 @@ fn copy_file_blocking(src: &Path, dest: &Path) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn list_directory_contents(path: String) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let dir = Path::new(&path);
         if !dir.exists() || !dir.is_dir() {
             return Err("Not a directory".to_string());
@@ -1142,7 +1070,6 @@ pub async fn list_directory_contents(path: String) -> Result<Vec<String>, String
         Ok(entries)
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()))
 }
 
 #[cfg(test)]
