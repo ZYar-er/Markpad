@@ -1697,6 +1697,12 @@
 		border-radius: 6px;
 		box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
 		/*
+		 * Drag and resize measure this dialog's border box and write it back as
+		 * inline `width`/`height`, so the border has to sit inside the width —
+		 * otherwise every drag adds the 2px border to the size it just read.
+		 */
+		box-sizing: border-box;
+		/*
 		 * 600px, not the 560px this shipped at: the label column plus the
 		 * widest font <select> ("Helvetica Neue (Default)", 188px) need 372px
 		 * of panel, and 560px only left 363px — the dropdown lost the end of
